@@ -1,6 +1,10 @@
 # NextDash v8 — visual Nextflow workflow builder
 
-NextDash is a desktop GUI for designing sample-aware [Nextflow](https://www.nextflow.io/) workflows as a spreadsheet-like diagram. It turns a validated visual graph into a runnable `main.nf` and an input manifest, without requiring users to write the pipeline structure by hand.
+NextDash is a desktop GUI for designing sample-aware [Nextflow](https://www.nextflow.io/) workflows as a spreadsheet-like diagram. The idea is a bit like building with Lego: start with small data and program blocks, put them together from left to right, then add the special blocks only when the workflow needs to wait, group, or join samples. I find this visual way of building a Nextflow pipeline more intuitive and more comprehensive than trying to describe the whole workflow only with comandes in a text file. It lets the user focus first on the logic and scientific part of the pipeline: what data goes where, which analysis is run, which samples must wait, and which samples must be paired. This can be easier to understand than reading a `main.nf` directly, and it can reveal flow or pairing mistakes that may not be easy to see in text-only programation. You can see the data, the programs, and the points where samples must meet before generating anything. NextDash turns the validated visual graph into a runnable `main.nf` and an input manifest, without requiring users to write the pipeline structure by hand.
+
+The reading direction is normally **left to right**. A block whose label starts with a **letter** is a data flow, for example `RAW`, `FASTQ`, `TUMOR`, or `FINAL`. A block whose label starts with a **number** is a program, for example `1`, `1.Star`, or `05`. This small rule is how NextDash knows if a block is a file/data stream or a command that consumes data and produces new data. Its the first thing to remember when building a diagram.
+
+Colors are also part of the language of the diagram: blue is a per-sample data flow, purple is a program, teal is a shared resource, light green is a serial/cohort flow, yellow/orange is WAS, green is WASG, pink is WASJ, red means a validation problem, and gray is a wire. You dont need to memorise all of it at once; the color key is shown at the top of the application and again in the validation diagram.
 
 It is especially useful when a workflow mixes per-sample processing with synchronization steps:
 
@@ -12,26 +16,57 @@ It is especially useful when a workflow mixes per-sample processing with synchro
 
 ## Screenshots
 
-### Standard per-sample workflow
+### Figure 1 — Easy workflow: build the blocks
 
 ![Workflow spreadsheet](Screenshots/Easy_01_BuildingBlocks.jpg)
 
+*Figure 1. This is the simplest possible NextDash workflow: `RAW` → `1` → `FINAL`. Read the row from left to right. `RAW` starts with a letter, so it is a blue root data flow (the input files). `1` starts with a number, so it is the purple program block; in the next tab it can be given a clearer name, such as “QualityControl” or “Star”. `FINAL` starts with a letter and is therefore the blue output data flow produced by program `1`. This is an easy per-sample process: every RAW sample can be processed independently and in parallel. The buttons above the spreadsheet add rows, columns, WAS/WASG/WASJ blocks, wires, and notes when the workflow grows later.*
+
+### Figure 2 — Easy workflow: give meaning to the blocks
+
 ![Program and data definitions](Screenshots/Easy_02_Programs_and_Data_configuration.jpg)
+
+*Figure 2. After the blocks have been drawn, **Read Programs + Data from Workflow Spreadsheet** finds the purple program block and the blue data blocks automatically. On the left, program `1` is associated with a real script/executable, its arguments, CPU, memory, time, and optional checkpoint folder. On the right, `RAW` is defined as the root input and `FINAL` as the final/generated output. This separation is useful because the picture stays simple while the paths and command-line details stay in one place. For this example, the flow is still easy: files enter as `RAW`, program `1` runs once per sample, and the result is named `FINAL`.*
+
+### Figure 3 — Easy workflow: validate what NextDash understood
 
 ![Validation and interpreted diagram](Screenshots/Easy_03_PressValidate_All.jpg)
 
+*Figure 3. Pressing **Validate all** checks that the visual blocks, program definitions, data definitions, and (when present) metadata rules agree. The report at left says this small example has one program, two data words, one root input, and no WAS/WASG/WASJ blocks. The large diagram at right is NextDash's interpretation of the spreadsheet: blue `RAW` enters purple program `1`/`Prog1`, which produces blue `FINAL`. This view should be checked before generating because it makes the direction of every flow obvious. If the intended route is not shown left to right here, fix the spreadsheet before continuing.*
+
+### Figure 4 — Easy workflow: generate the Nextflow project
+
 ![Generated project](Screenshots/Easy_04_Press_Generate_Project.jpg)
 
-### Synchronization examples
+*Figure 4. This last tab converts the validated blocks into files that Nextflow can run. The selected output folder receives `main.nf`, `input_manifest.tsv`, `NextDash.tabtxt`, and `DEFINITIONS.txt`, as shown in the confirmation box. In this example the output is copied to `results`, Windows paths are converted for WSL, and generated files can be overwritten. The cache section is shown too: task cache data can be measured and removed only after the run has stopped. It is still the same small `RAW` → `1` → `FINAL` workflow; generation does not change the logic, it simply writes it as Nextflow code.*
 
-| WAS | WASG | WASJ |
-| --- | --- | --- |
-| ![WAS building blocks](Screenshots/WAS_01_BuildingBlocks.jpg) | ![WASG building blocks](Screenshots/WASG_01_BuildingBlocks.jpg) | ![WASJ building blocks](Screenshots/WASJ_01_BuildingBlocks.jpg) |
-| Wait for all required streams before continuing individual samples. | Collect a stream into one cohort-level task. | Join related records using a metadata table. |
+### Figure 5 — WAS: a slightly more complicated wait
 
-For WASJ, configure the metadata and inspect the pairing before generation:
+![WAS building blocks](Screenshots/WAS_01_BuildingBlocks.jpg)
+
+*Figure 5. This example has three incoming blue data flows: `A`, `B`, and `C`. They are processed by purple programs `1`, `2`, and `1`, producing `A_DONE`, `B_DONE`, and `C_DONE`. The vertical yellow/orange `WAS` block tells NextDash to wait until all participating flows have reached this point. After the wait, the primary flow continues through purple program `3` to blue `FINAL`. This is more complicated than Figure 1 because several sample streams must be ready together, but the basic rule has not changed: letter-first labels are data, number-first labels are programs, and the diagram is read from left to right.*
+
+### Figure 6 — WASG: make one cohort-level task
+
+![WASG building blocks](Screenshots/WASG_01_BuildingBlocks.jpg)
+
+*Figure 6. `RAW` is first a blue per-sample flow. The green `WASG` block waits for all RAW samples and groups them into one cohort task. Purple program `4` then runs once for the whole group, not once per sample, and writes the light-green `GROUPED` result. Light green is important here: it shows that the downstream flow is serial/cohort-level rather than the original parallel sample flow. This is useful for steps such as cohort QC, combined counts, or a global report.*
+
+### Figure 7 — WASJ: join related samples plus a shared resource
+
+![WASJ building blocks](Screenshots/WASJ_01_BuildingBlocks.jpg)
+
+*Figure 7. This is the more complicated example. `TUMOR` and `NORMAL` are blue per-sample data flows; `REF` is teal because it is one shared resource, such as the same reference genome used for all pairs. The vertical pink `WASJ` block waits for the needed inputs and joins Tumor with Normal using metadata rather than file order. Purple program `5` receives the joined group and produces `JOINED`; purple program `3` then continues from `JOINED` to `FINAL`. The pink block does not guess pairs by row position—its configuration is shown in Figure 8. This avoids quietly matching the wrong samples when folders are sorted differently.*
+
+### Figure 8 — WASJ: configure and check the metadata join
 
 ![WASJ metadata and pairing](Screenshots/WASJ_03_Metada_and_Pairing.jpg)
+
+*Figure 8. This tab gives the pink WASJ block its biological meaning. The selected block receives three streams: `TUMOR`, `NORMAL`, and `REF`. The sample table supplies a file column and uses `Patient_id` as the join key, so records belonging to the same patient are paired. `Disease` is selected as a difference key: `TUMOR` expects `Disease=Tumor`, while `NORMAL` expects `Disease=Control`; `REF` remains a shared resource. Save the configuration and use **Preview / validate pairing** before generating. The extra setup is worth doing for a complicated join because it makes the pairing explicit and repeatable, instead of relying on filenames being in the same order.*
+
+### A quick visual reminder
+
+The three special blocks solve different problems: **WAS** waits and then releases the primary sample flow, **WASG** waits and creates one grouped/cohort task, and **WASJ** waits and pairs related records using selected metadata fields. For all three, the ordinary data/program blocks still read left to right.
 
 ## Requirements
 
