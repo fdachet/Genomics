@@ -2,6 +2,8 @@
 
 NextDash is a desktop GUI for designing sample-aware [Nextflow](https://www.nextflow.io/) workflows as a spreadsheet-like diagram. The idea is a bit like building with Lego: start with small data and program blocks, put them together from left to right, then add the special blocks only when the workflow needs to wait, group, or join samples. I find this visual way of building a Nextflow pipeline more intuitive and more comprehensive than trying to describe the whole workflow only with comandes in a text file. It lets the user focus first on the logic and scientific part of the pipeline: what data goes where, which analysis is run, which samples must wait, and which samples must be paired. This can be easier to understand than reading a `main.nf` directly, and it can reveal flow or pairing mistakes that may not be easy to see in text-only programation. You can see the data, the programs, and the points where samples must meet before generating anything. NextDash turns the validated visual graph into a runnable `main.nf` and an input manifest, without requiring users to write the pipeline structure by hand.
 
+NextDash is specialised for genomics and cancer-research pipelines, where the same biological logic is repeated across many samples but some steps must later combine them. Typical workflows include FASTQ quality control and trimming, read mapping to a reference genome, BAM sorting/indexing, gene or feature counting, RNA-seq differential expression, germline or somatic variant calling, tumor/normal mutation identification, copy-number analysis, variant annotation, mutation filtering, and cohort-level reports. For example, a simple workflow can be `FASTQ` → mapping program → `BAM` → counting program → `COUNTS`; a more advanced cancer workflow can join a `TUMOR` sample with its matching `NORMAL` sample and a shared `REF` genome before running a somatic mutation caller. The generated workflow still runs the tools that you choose—NextDash helps make the scientific flow visible and reproducible.
+
 The reading direction is normally **left to right**. A block whose label starts with a **letter** is a data flow, for example `RAW`, `FASTQ`, `TUMOR`, or `FINAL`. A block whose label starts with a **number** is a program, for example `1`, `1.Star`, or `05`. This small rule is how NextDash knows if a block is a file/data stream or a command that consumes data and produces new data. Its the first thing to remember when building a diagram.
 
 Colors are also part of the language of the diagram: blue is a per-sample data flow, purple is a program, teal is a shared resource, light green is a serial/cohort flow, yellow/orange is WAS, green is WASG, pink is WASJ, red means a validation problem, and gray is a wire. You dont need to memorise all of it at once; the color key is shown at the top of the application and again in the validation diagram.
@@ -67,6 +69,73 @@ It is especially useful when a workflow mixes per-sample processing with synchro
 ### A quick visual reminder
 
 The three special blocks solve different problems: **WAS** waits and then releases the primary sample flow, **WASG** waits and creates one grouped/cohort task, and **WASJ** waits and pairs related records using selected metadata fields. For all three, the ordinary data/program blocks still read left to right.
+
+## When are WAS, WASG, and WASJ useful in genomics?
+
+Think of these blocks as three different questions:
+
+- **WAS:** “Should we wait until the whole study is ready before continuing with each patient/sample?”
+- **WASG:** “Do we need one result for the whole study group?”
+- **WASJ:** “Which files belong to the same patient or biological sample?”
+
+Only use a special block when it reflects a real scientific need. The examples below use technical labels, but the important part is the biological question.
+
+### WAS — first wait for the study, then continue sample by sample
+
+Use **WAS** when you want to hold the next stage until the required work has finished for **all samples**, but afterwards you still want one result per sample. In plain language: “do not issue the individual results until the study has reached this checkpoint.”
+
+For example, in a sequencing study, every patient sample may first go through two checks: the sequencing reads are mapped to the genome, and a quality check confirms that the sample is usable.
+
+```text
+Raw sequencing reads → mapping → aligned reads
+Raw sequencing reads → quality check → QC result
+All required results → WAS → one downstream report for each patient/sample
+```
+
+`FASTQ` is commonly used to mean raw sequencing reads and `BAM` commonly means reads already aligned to the reference genome; the labels in NextDash can use clearer local names if preferred. The yellow/orange WAS block makes the checkpoint visible. Once the checkpoint is passed, the main sample flow continues separately for each patient. This is helpful when no individual report should move forward until all required samples have completed the initial QC/preparation stage.
+
+### WASG — make one answer for the whole study group
+
+Use **WASG** when the next step needs **every sample together** and should run only once. In plain language: “collect the study results, then make one cohort-level answer.” The output is light green because it is no longer one result per patient/sample.
+
+Examples that are easy to recognise:
+
+- **One quality-control report for the study:** collect all sample QC results and make one MultiQC report for the laboratory or project.
+- **RNA-seq comparison:** first count genes in each sample, then combine all counts into one table to compare tumour versus control, treatment versus untreated, or other groups.
+- **Joint variant analysis:** collect variant information from all patients before making a shared cohort call set.
+- **Cancer cohort summary:** combine individual mutation or copy-number results into one table or plot showing what is seen across the cohort.
+
+For example:
+
+```text
+Each RNA-seq sample → gene counting → one count file per sample
+All count files → WASG → group comparison → one differential-expression result
+```
+
+Without WASG, the group comparison could accidentally run once per sample, which does not answer the scientific question. The green block says clearly that the program after it needs the complete cohort.
+
+### WASJ — match samples that belong together
+
+Use **WASJ** when a program needs samples that belong to the **same patient** or the same biological unit. In plain language: “find the correct partner before running the comparison.”
+
+The most common cancer-genomics example is matched tumour/normal mutation calling:
+
+```text
+Tumour DNA from patient 01  ─┐
+Normal DNA from patient 01  ─┼→ WASJ → mutation comparison → patient 01 mutation list
+Reference genome            ─┘
+```
+
+The same thing happens independently for patient 02, patient 03, and so on. The teal reference genome is shared by everyone; it is not matched to one patient. In the metadata table, `patient_id` tells NextDash which tumour and normal belong together. A second column, such as `sample_type`, says which file is `Tumor` and which is `Normal`. This avoids a serious error: accidentally comparing patient 01's tumour with patient 02's normal sample just because the files happened to be next to each other in a folder.
+
+Other clear WASJ examples are:
+
+- **Cancer at two time points:** match diagnosis and relapse samples from the same patient to look for newly acquired mutations.
+- **Before/after treatment:** match samples from the same person before and after therapy.
+- **DNA and RNA from the same tumour:** match the DNA result with RNA sequencing from the same patient when checking whether a mutation also has expression or fusion evidence.
+- **Paired case/control experiments:** match samples from the same donor, organoid, or experimental unit before comparing them.
+
+In Tab 3, choose the file/sample column, the joining field (for example `patient_id`), and the values that distinguish the inputs (for example `Tumor` and `Normal`). Then use **Preview / validate pairing**. It takes a little extra setup, but it makes the biological pairing visible and much safer.
 
 ## Requirements
 
