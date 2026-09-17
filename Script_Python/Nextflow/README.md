@@ -4,7 +4,7 @@ Tab 1 — Workflow spreadsheet: Draw the pipeline using data words, program IDs,
 
 
 ![Tab1](Screenshots/Easy_01_BuildingBlocks.jpg)
-
+*Figure 1 — NextDash workflow spreadsheet used to visually construct a Nextflow pipeline.*
 
 
 Tab 2 — Program + Data definitions: Define each program/script and each input, intermediate, or output data word.
