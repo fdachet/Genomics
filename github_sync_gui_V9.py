@@ -97,7 +97,7 @@ COLOR_LIGHT_ORANGE = "#ffedd5"
 COLOR_LIGHT_RED = "#fee2e2"
 COLOR_LIGHT_PURPLE = "#ede9fe"
 
-APP_TITLE = "GitHub Controlled Folder Sync • Version 7"
+APP_TITLE = "GitHub Controlled Folder Sync • Version 9"
 CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 SETTINGS_FILE = Path(__file__).with_name("github_sync_gui_settings.json")
 
@@ -194,7 +194,7 @@ class GitHubSyncApp(BaseTk):
     def __init__(self) -> None:
         super().__init__()
         self.title(APP_TITLE)
-        self.geometry("1500x930")
+        self.geometry("1450x900")
         self.minsize(1180, 760)
         self.configure(bg=COLOR_BG)
 
@@ -270,285 +270,167 @@ class GitHubSyncApp(BaseTk):
 
     def _build_ui(self) -> None:
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(4, weight=1)
+        self.grid_rowconfigure(1, weight=1)
 
-        # Header
-        header = tk.Frame(self, bg=COLOR_NAVY, padx=16, pady=10)
+        header = tk.Frame(self, bg=COLOR_NAVY, padx=14, pady=8)
         header.grid(row=0, column=0, sticky="ew")
         header.grid_columnconfigure(0, weight=1)
+        ttk.Label(header, text=APP_TITLE, style="Header.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text="Controlled Windows folder ↔ GitHub repository", style="SubHeader.TLabel").grid(row=1, column=0, sticky="w")
 
-        ttk.Label(header, text=APP_TITLE, style="Header.TLabel").grid(
-            row=0, column=0, sticky="w"
-        )
-        ttk.Label(
-            header,
-            text=("One controlled Windows folder ↔ one GitHub repository. "
-                  "No second source folder is used."),
-            style="SubHeader.TLabel",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        main = ttk.Panedwindow(self, orient="horizontal")
+        main.grid(row=1, column=0, sticky="nsew", padx=8, pady=8)
 
-        # Tool/status strip
-        strip = tk.Frame(self, bg="#d7e2ed", padx=10, pady=8)
-        strip.grid(row=1, column=0, sticky="ew")
-        strip.grid_columnconfigure(7, weight=1)
+        # Left 30% is a vertically scrollable control panel.  The Canvas is
+        # necessary because ttk.Frame itself cannot scroll.  Mouse-wheel
+        # scrolling is active while the pointer is anywhere over this panel.
+        left_shell = ttk.Frame(main, style="Panel.TFrame")
+        right = ttk.Panedwindow(main, orient="vertical")
+        main.add(left_shell, weight=3)
+        main.add(right, weight=7)
 
-        self.git_badge = tk.Label(
-            strip, textvariable=self.git_status_var, bg=COLOR_ORANGE, fg=COLOR_WHITE,
-            font=("Segoe UI", 9, "bold"), padx=10, pady=6
-        )
-        self.git_badge.grid(row=0, column=0, padx=(0, 8))
+        left_shell.grid_rowconfigure(0, weight=1)
+        left_shell.grid_columnconfigure(0, weight=1)
+        left_canvas = tk.Canvas(left_shell, bg=COLOR_PANEL, highlightthickness=0, borderwidth=0)
+        left_scrollbar = ttk.Scrollbar(left_shell, orient="vertical", command=left_canvas.yview)
+        left_canvas.configure(yscrollcommand=left_scrollbar.set)
+        left_canvas.grid(row=0, column=0, sticky="nsew")
+        left_scrollbar.grid(row=0, column=1, sticky="ns")
 
-        ttk.Button(strip, text="Detect Git", command=self.detect_git).grid(row=0, column=1, padx=4)
-        ttk.Button(strip, text="Browse to git.exe", command=self.browse_git).grid(row=0, column=2, padx=4)
-        ttk.Button(strip, text="Install Git", style="Orange.TButton", command=self.open_git_download).grid(
-            row=0, column=3, padx=4
-        )
-        ttk.Button(strip, text="GitHub Sign-in (Browser)", style="Green.TButton",
-                   command=self.github_sign_in).grid(row=0, column=4, padx=(14, 4))
-        ttk.Button(strip, text="Refresh GitHub Login", command=self.refresh_github_auth_status).grid(
-            row=0, column=5, padx=4
-        )
-        ttk.Button(strip, text="Open GitHub", command=self.open_github_page).grid(row=0, column=6, padx=4)
+        left = ttk.Frame(left_canvas, style="Panel.TFrame", padding=8)
+        left_window = left_canvas.create_window((0, 0), window=left, anchor="nw")
+        left.grid_columnconfigure(0, weight=1)
 
-        dnd_text = "Drag & drop: enabled" if HAVE_DND else "Drag & drop: optional component missing"
-        dnd_bg = COLOR_GREEN if HAVE_DND else COLOR_ORANGE
-        self.dnd_badge = tk.Label(strip, text=dnd_text, bg=dnd_bg, fg=COLOR_WHITE,
-                                  font=("Segoe UI", 9, "bold"), padx=10, pady=6)
-        self.dnd_badge.grid(row=0, column=8, sticky="e")
+        def _update_left_scrollregion(_event=None):
+            left_canvas.configure(scrollregion=left_canvas.bbox("all"))
 
-        # Explicit GitHub authentication/account display
-        authbar = tk.Frame(self, bg=COLOR_PANEL, padx=10, pady=7, highlightthickness=1,
-                           highlightbackground=COLOR_BORDER)
-        authbar.grid(row=2, column=0, sticky="ew", padx=10, pady=(7, 2))
-        authbar.grid_columnconfigure(1, weight=1)
+        def _fit_left_width(event):
+            # Keep the embedded control frame exactly as wide as the visible
+            # canvas so controls resize with the 30% pane.
+            left_canvas.itemconfigure(left_window, width=max(1, event.width))
 
-        self.auth_badge = tk.Label(
-            authbar, textvariable=self.auth_status_var, bg=COLOR_ORANGE, fg=COLOR_WHITE,
-            font=("Segoe UI", 10, "bold"), padx=12, pady=7
-        )
-        self.auth_badge.grid(row=0, column=0, rowspan=2, sticky="nsw", padx=(0, 12))
+        def _left_mousewheel(event):
+            # Windows / macOS Tk supplies event.delta.  Linux Tk commonly uses
+            # Button-4/Button-5, handled below as well.
+            if getattr(event, "num", None) == 4:
+                units = -1
+            elif getattr(event, "num", None) == 5:
+                units = 1
+            else:
+                delta = getattr(event, "delta", 0)
+                if delta == 0:
+                    return "break"
+                units = -int(delta / 120) if abs(delta) >= 120 else (-1 if delta > 0 else 1)
+            left_canvas.yview_scroll(units, "units")
+            return "break"
 
-        tk.Label(
-            authbar, textvariable=self.github_root_var, bg=COLOR_PANEL, fg=COLOR_NAVY,
-            font=("Segoe UI", 9, "bold"), anchor="w"
-        ).grid(row=0, column=1, sticky="ew")
+        def _bind_left_wheel(_event=None):
+            left_canvas.bind_all("<MouseWheel>", _left_mousewheel)
+            left_canvas.bind_all("<Button-4>", _left_mousewheel)
+            left_canvas.bind_all("<Button-5>", _left_mousewheel)
 
-        tk.Label(
-            authbar, textvariable=self.local_root_var, bg=COLOR_PANEL, fg=COLOR_TEXT,
-            font=("Segoe UI", 9), anchor="w"
-        ).grid(row=1, column=1, sticky="ew", pady=(3, 0))
+        def _unbind_left_wheel(_event=None):
+            left_canvas.unbind_all("<MouseWheel>")
+            left_canvas.unbind_all("<Button-4>")
+            left_canvas.unbind_all("<Button-5>")
 
-        ownership_row = tk.Frame(authbar, bg=COLOR_PANEL)
-        ownership_row.grid(row=2, column=1, sticky="ew", pady=(6, 0))
-        ownership_row.grid_columnconfigure(0, weight=1)
-        self.ownership_label = tk.Label(
-            ownership_row, textvariable=self.ownership_status_var, bg=COLOR_PANEL,
-            fg=COLOR_MUTED, font=("Segoe UI", 9, "bold"), anchor="w"
-        )
-        self.ownership_label.grid(row=0, column=0, sticky="ew")
-        ttk.Button(ownership_row, text="Check ownership", command=self.check_repo_ownership).grid(
-            row=0, column=1, padx=(8, 4)
-        )
-        ttk.Button(ownership_row, text="Trust ONLY this folder", style="Orange.TButton",
-                   command=self.trust_selected_safe_directory).grid(row=0, column=2, padx=(4, 0))
+        left.bind("<Configure>", _update_left_scrollregion)
+        left_canvas.bind("<Configure>", _fit_left_width)
+        left_shell.bind("<Enter>", _bind_left_wheel)
+        left_shell.bind("<Leave>", _unbind_left_wheel)
 
-        # Configuration section
-        config = ttk.LabelFrame(self, text="1. Controlled folder and GitHub repository",
-                                style="Section.TLabelframe", padding=10)
-        config.grid(row=3, column=0, sticky="ew", padx=10, pady=(5, 5))
-        config.grid_columnconfigure(1, weight=1)
-        config.grid_columnconfigure(3, weight=1)
+        # --- Left 30%: account, repository and actions ---
+        tools = ttk.LabelFrame(left, text="Git and GitHub account", style="Section.TLabelframe", padding=8)
+        tools.grid(row=0, column=0, sticky="ew", pady=(0, 7))
+        tools.grid_columnconfigure(0, weight=1)
+        self.git_badge = tk.Label(tools, textvariable=self.git_status_var, bg=COLOR_ORANGE, fg=COLOR_WHITE, font=("Segoe UI",9,"bold"), padx=8, pady=5)
+        self.git_badge.grid(row=0, column=0, sticky="ew", pady=(0,4))
+        self.auth_badge = tk.Label(tools, textvariable=self.auth_status_var, bg=COLOR_ORANGE, fg=COLOR_WHITE, font=("Segoe UI",9,"bold"), padx=8, pady=5)
+        self.auth_badge.grid(row=1, column=0, sticky="ew", pady=2)
+        tk.Label(tools, textvariable=self.github_root_var, bg=COLOR_PANEL, fg=COLOR_NAVY, anchor="w", justify="left", wraplength=390).grid(row=2,column=0,sticky="ew",pady=2)
+        row = ttk.Frame(tools, style="Panel.TFrame"); row.grid(row=3,column=0,sticky="ew",pady=(5,0))
+        for i in range(3): row.grid_columnconfigure(i,weight=1)
+        ttk.Button(row,text="Detect Git",command=self.detect_git).grid(row=0,column=0,sticky="ew",padx=(0,2))
+        ttk.Button(row,text="Sign-in",style="Green.TButton",command=self.github_sign_in).grid(row=0,column=1,sticky="ew",padx=2)
+        ttk.Button(row,text="Refresh login",command=self.refresh_github_auth_status).grid(row=0,column=2,sticky="ew",padx=(2,0))
+        row2=ttk.Frame(tools,style="Panel.TFrame"); row2.grid(row=4,column=0,sticky="ew",pady=(4,0)); row2.grid_columnconfigure(0,weight=1); row2.grid_columnconfigure(1,weight=1)
+        ttk.Button(row2,text="Browse git.exe",command=self.browse_git).grid(row=0,column=0,sticky="ew",padx=(0,2))
+        ttk.Button(row2,text="Install Git",style="Orange.TButton",command=self.open_git_download).grid(row=0,column=1,sticky="ew",padx=(2,0))
 
-        ttk.Label(config, text="Controlled local folder:", style="Panel.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 8), pady=4
-        )
-        self.repo_entry = ttk.Entry(config, textvariable=self.repo_folder_var)
-        self.repo_entry.grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(config, text="Browse...", command=self.browse_repo_folder).grid(
-            row=0, column=3, sticky="ew", padx=(8, 0), pady=4
-        )
+        repo = ttk.LabelFrame(left, text="Controlled folder and repository", style="Section.TLabelframe", padding=8)
+        repo.grid(row=1,column=0,sticky="ew",pady=(0,7)); repo.grid_columnconfigure(0,weight=1)
+        ttk.Label(repo,text="Controlled local folder:",style="Panel.TLabel").grid(row=0,column=0,sticky="w")
+        self.repo_entry=ttk.Entry(repo,textvariable=self.repo_folder_var); self.repo_entry.grid(row=1,column=0,sticky="ew",pady=(2,3))
+        ttk.Button(repo,text="Browse...",command=self.browse_repo_folder).grid(row=2,column=0,sticky="ew",pady=(0,7))
+        ttk.Label(repo,text="GitHub repository HTTPS URL:",style="Panel.TLabel").grid(row=3,column=0,sticky="w")
+        self.remote_url_combo=ttk.Combobox(repo,textvariable=self.remote_url_var,values=self.favorite_repo_urls); self.remote_url_combo.grid(row=4,column=0,sticky="ew",pady=(2,3))
+        fav=ttk.Frame(repo,style="Panel.TFrame"); fav.grid(row=5,column=0,sticky="ew"); fav.grid_columnconfigure(0,weight=1); fav.grid_columnconfigure(1,weight=1)
+        ttk.Button(fav,text="★ Favorite",command=self.add_repo_favorite).grid(row=0,column=0,sticky="ew",padx=(0,2))
+        ttk.Button(fav,text="Remove favorite",command=self.remove_repo_favorite).grid(row=0,column=1,sticky="ew",padx=(2,0))
+        ttk.Button(repo,text="Initialize / Connect",style="Blue.TButton",command=self.initialize_or_connect).grid(row=6,column=0,sticky="ew",pady=(6,0))
+        self.ownership_label=tk.Label(repo,textvariable=self.ownership_status_var,bg=COLOR_PANEL,fg=COLOR_MUTED,anchor="w",justify="left",wraplength=390); self.ownership_label.grid(row=7,column=0,sticky="ew",pady=(6,2))
+        own=ttk.Frame(repo,style="Panel.TFrame"); own.grid(row=8,column=0,sticky="ew"); own.grid_columnconfigure(0,weight=1); own.grid_columnconfigure(1,weight=1)
+        ttk.Button(own,text="Check ownership",command=self.check_repo_ownership).grid(row=0,column=0,sticky="ew",padx=(0,2))
+        ttk.Button(own,text="Trust this folder + subfolders",style="Orange.TButton",command=self.trust_selected_safe_directory).grid(row=0,column=1,sticky="ew",padx=(2,0))
 
-        if HAVE_DND and DND_FILES is not None:
-            self.repo_entry.drop_target_register(DND_FILES)
-            self.repo_entry.dnd_bind("<<Drop>>", self._on_folder_drop)
+        ident=ttk.LabelFrame(left,text="Commit identity",style="Section.TLabelframe",padding=8); ident.grid(row=2,column=0,sticky="ew",pady=(0,7)); ident.grid_columnconfigure(0,weight=1)
+        ttk.Label(ident,text="Author name:",style="Panel.TLabel").grid(row=0,column=0,sticky="w"); ttk.Entry(ident,textvariable=self.author_name_var).grid(row=1,column=0,sticky="ew")
+        ttk.Label(ident,text="Author email:",style="Panel.TLabel").grid(row=2,column=0,sticky="w",pady=(4,0)); ttk.Entry(ident,textvariable=self.author_email_var).grid(row=3,column=0,sticky="ew")
+        ttk.Button(ident,text="Save identity for this repository only",command=self.save_local_identity).grid(row=4,column=0,sticky="ew",pady=(5,0))
 
-        ttk.Label(config, text="GitHub repository HTTPS URL:", style="Panel.TLabel").grid(
-            row=1, column=0, sticky="w", padx=(0, 8), pady=4
-        )
-        repo_url_box = ttk.Frame(config, style="Panel.TFrame")
-        repo_url_box.grid(row=1, column=1, columnspan=2, sticky="ew", pady=4)
-        repo_url_box.grid_columnconfigure(0, weight=1)
-        self.remote_url_combo = ttk.Combobox(
-            repo_url_box, textvariable=self.remote_url_var, values=self.favorite_repo_urls
-        )
-        self.remote_url_combo.grid(row=0, column=0, sticky="ew")
-        ttk.Button(repo_url_box, text="★ Favorite", command=self.add_repo_favorite).grid(
-            row=0, column=1, padx=(6, 3)
-        )
-        ttk.Button(repo_url_box, text="Remove favorite", command=self.remove_repo_favorite).grid(
-            row=0, column=2, padx=(3, 0)
-        )
-        ttk.Button(config, text="Initialize / Connect", style="Blue.TButton",
-                   command=self.initialize_or_connect).grid(
-            row=1, column=3, sticky="ew", padx=(8, 0), pady=4
-        )
+        actions=ttk.LabelFrame(left,text="Actions",style="Section.TLabelframe",padding=8); actions.grid(row=3,column=0,sticky="ew",pady=(0,7)); actions.grid_columnconfigure(0,weight=1)
+        self.action_buttons=[]
+        fetch_btn=ttk.Button(actions,text="Fetch (Preview)",style="Blue.TButton",command=self.compare_with_github); fetch_btn.grid(row=0,column=0,sticky="ew",pady=2); self.action_buttons.append(fetch_btn)
+        self.show_identical_check=ttk.Checkbutton(actions,text="Show unchanged files",variable=self.show_identical_var,command=self.compare_with_github); self.show_identical_check.grid(row=1,column=0,sticky="w",pady=(3,7))
+        pull_btn=ttk.Button(actions,text="Pull from GitHub",style="Orange.TButton",command=self.pull_remote); pull_btn.grid(row=2,column=0,sticky="ew",pady=2); self.action_buttons.append(pull_btn)
+        self.upload_button=ttk.Button(actions,text="Push to GitHub",style="Green.TButton",command=self.stage_commit_push); self.upload_button.grid(row=3,column=0,sticky="ew",pady=2)
+        openrow=ttk.Frame(actions,style="Panel.TFrame"); openrow.grid(row=4,column=0,sticky="ew",pady=(7,0)); openrow.grid_columnconfigure(0,weight=1); openrow.grid_columnconfigure(1,weight=1)
+        ttk.Button(openrow,text="Open local folder",command=self.open_repo_folder).grid(row=0,column=0,sticky="ew",padx=(0,2))
+        ttk.Button(openrow,text="Open GitHub",command=self.open_github_page).grid(row=0,column=1,sticky="ew",padx=(2,0))
+        repair_btn=ttk.Button(actions,text="Repair stale Git paths",command=self.repair_stale_git_paths); repair_btn.grid(row=5,column=0,sticky="ew",pady=(7,0)); self.action_buttons.append(repair_btn)
 
-        ttk.Label(config, text="Git executable:", style="Panel.TLabel").grid(
-            row=2, column=0, sticky="w", padx=(0, 8), pady=4
-        )
-        ttk.Entry(config, textvariable=self.git_exe_var, state="readonly").grid(
-            row=2, column=1, columnspan=3, sticky="ew", pady=4
-        )
+        # --- Right 70%, upper half: comparison ---
+        compare_frame=ttk.LabelFrame(right,text="Local folder compared with GitHub",style="Section.TLabelframe",padding=4)
+        compare_frame.grid_rowconfigure(1,weight=1); compare_frame.grid_columnconfigure(0,weight=1)
+        self.compare_summary_var=tk.StringVar(value="Click Fetch (Preview) to compare the controlled folder with GitHub.")
+        ttk.Label(compare_frame,textvariable=self.compare_summary_var,style="Panel.TLabel").grid(row=0,column=0,sticky="ew",padx=4,pady=4)
+        columns=("status","path","local_size","remote_size","local_modified")
+        self.tree=ttk.Treeview(compare_frame,columns=columns,show="headings")
+        for col,text in [("status","Status"),("path","Relative path"),("local_size","Local size"),("remote_size","GitHub size"),("local_modified","Local modified")]: self.tree.heading(col,text=text)
+        self.tree.column("status",width=155,stretch=False,anchor="center"); self.tree.column("path",width=650,stretch=True); self.tree.column("local_size",width=100,stretch=False,anchor="e"); self.tree.column("remote_size",width=100,stretch=False,anchor="e"); self.tree.column("local_modified",width=150,stretch=False,anchor="center")
+        ys=ttk.Scrollbar(compare_frame,orient="vertical",command=self.tree.yview); xs=ttk.Scrollbar(compare_frame,orient="horizontal",command=self.tree.xview); self.tree.configure(yscrollcommand=ys.set,xscrollcommand=xs.set)
+        self.tree.grid(row=1,column=0,sticky="nsew"); ys.grid(row=1,column=1,sticky="ns"); xs.grid(row=2,column=0,sticky="ew")
+        for tag,bg in [("LOCAL ONLY",COLOR_LIGHT_BLUE),("REMOTE ONLY",COLOR_LIGHT_ORANGE),("DIFFERENT",COLOR_LIGHT_RED),("IDENTICAL",COLOR_LIGHT_GREEN),("ERROR",COLOR_LIGHT_PURPLE)]: self.tree.tag_configure(tag,background=bg)
 
-        safety_text = (
-            "SAFETY BOUNDARY: only the selected controlled folder is enumerated for upload/compare. "
-            "Your real/private script directories do not need to be provided to this program."
-        )
-        tk.Label(config, text=safety_text, bg=COLOR_LIGHT_GREEN, fg=COLOR_GREEN_DARK,
-                 anchor="w", justify="left", padx=8, pady=6).grid(
-            row=3, column=0, columnspan=4, sticky="ew", pady=(6, 4)
-        )
+        # --- Right 70%, lower half: activity log ---
+        log_frame=ttk.LabelFrame(right,text="Activity log",style="Section.TLabelframe",padding=4); log_frame.grid_rowconfigure(0,weight=1); log_frame.grid_columnconfigure(0,weight=1)
+        self.log_text=tk.Text(log_frame,bg=COLOR_LOG_BG,fg=COLOR_LOG_FG,insertbackground=COLOR_WHITE,wrap="none",font=("Consolas",9))
+        ly=ttk.Scrollbar(log_frame,orient="vertical",command=self.log_text.yview); lx=ttk.Scrollbar(log_frame,orient="horizontal",command=self.log_text.xview); self.log_text.configure(yscrollcommand=ly.set,xscrollcommand=lx.set)
+        self.log_text.grid(row=0,column=0,sticky="nsew"); ly.grid(row=0,column=1,sticky="ns"); lx.grid(row=1,column=0,sticky="ew")
+        for tag,fg in [("INFO","#c9d6e2"),("OK","#6ee7a0"),("WARN","#ffd166"),("ERROR","#ff7b72"),("CMD","#8ecae6")]: self.log_text.tag_configure(tag,foreground=fg)
+        right.add(compare_frame,weight=1); right.add(log_frame,weight=1)
 
-        auth_text = (
-            "GitHub account passwords are not accepted or stored by this GUI. HTTPS authentication "
-            "uses Git Credential Manager and browser sign-in."
-        )
-        tk.Label(config, text=auth_text, bg=COLOR_LIGHT_BLUE, fg=COLOR_NAVY,
-                 anchor="w", justify="left", padx=8, pady=6).grid(
-            row=4, column=0, columnspan=4, sticky="ew", pady=(2, 6)
-        )
+        footer=ttk.Frame(left,style="Panel.TFrame"); footer.grid(row=4,column=0,sticky="sew",pady=(4,0)); footer.grid_columnconfigure(0,weight=1)
+        self.progress=ttk.Progressbar(footer,mode="indeterminate"); self.progress.grid(row=0,column=0,sticky="ew")
+        ttk.Label(footer,textvariable=self.main_status_var,style="Panel.TLabel").grid(row=1,column=0,sticky="w",pady=(3,0))
 
-        # Repository-local identity
-        ident = tk.Frame(config, bg=COLOR_PANEL)
-        ident.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(4, 0))
-        ident.grid_columnconfigure(1, weight=1)
-        ident.grid_columnconfigure(3, weight=1)
+        if HAVE_DND:
+            try:
+                self.repo_entry.drop_target_register(DND_FILES); self.repo_entry.dnd_bind("<<Drop>>", self._on_drop)
+            except Exception:
+                pass
 
-        ttk.Label(ident, text="Commit author name:", style="Panel.TLabel").grid(
-            row=0, column=0, sticky="w", padx=(0, 6)
-        )
-        ttk.Entry(ident, textvariable=self.author_name_var).grid(
-            row=0, column=1, sticky="ew", padx=(0, 12)
-        )
-        ttk.Label(ident, text="Commit author email:", style="Panel.TLabel").grid(
-            row=0, column=2, sticky="w", padx=(0, 6)
-        )
-        ttk.Entry(ident, textvariable=self.author_email_var).grid(
-            row=0, column=3, sticky="ew", padx=(0, 12)
-        )
-        ttk.Button(ident, text="Save identity for this repository only",
-                   command=self.save_local_identity).grid(row=0, column=4, sticky="e")
+        # Initial 30/70 and 50/50 sash positions after geometry is realized.
+        def set_sashes():
+            try:
+                main.sashpos(0, int(main.winfo_width()*0.30))
+                right.sashpos(0, int(right.winfo_height()*0.50))
+            except Exception:
+                pass
+        self.after(250,set_sashes)
 
-        # Main body with controls, comparison and log
-        body = ttk.Frame(self)
-        body.grid(row=4, column=0, sticky="nsew", padx=10, pady=5)
-        body.grid_columnconfigure(0, weight=1)
-        body.grid_rowconfigure(1, weight=3)
-        body.grid_rowconfigure(2, weight=2)
-
-        actions = ttk.LabelFrame(body, text="2. Compare, download, and upload",
-                                 style="Section.TLabelframe", padding=10)
-        actions.grid(row=0, column=0, sticky="ew")
-        actions.grid_columnconfigure(12, weight=1)
-
-        self.action_buttons: list[ttk.Button] = []
-
-        def add_action(text: str, command: Callable[[], None], column: int,
-                       style_name: str = "TButton") -> ttk.Button:
-            btn = ttk.Button(actions, text=text, command=command, style=style_name)
-            btn.grid(row=0, column=column, padx=4, pady=3)
-            self.action_buttons.append(btn)
-            return btn
-
-        add_action("Compare Local ↔ GitHub", self.compare_with_github, 0, "Blue.TButton")
-        add_action("Fetch", self.fetch_remote, 1)
-        add_action("Pull from GitHub", self.pull_remote, 2, "Orange.TButton")
-        add_action("Git Status", self.show_git_status, 3)
-        add_action("Open Controlled Folder", self.open_repo_folder, 4)
-        add_action("Refresh Identity", self.load_identity, 5)
-        add_action("Repair stale Git paths", self.repair_stale_git_paths, 6, "Orange.TButton")
-
-        ttk.Checkbutton(actions, text="Show identical files",
-                        variable=self.show_identical_var).grid(row=0, column=7, padx=(12, 4))
-
-        ttk.Label(actions, text="Commit message:", style="Panel.TLabel").grid(
-            row=0, column=8, padx=(12, 4)
-        )
-        ttk.Entry(actions, textvariable=self.commit_message_var, width=32).grid(
-            row=0, column=9, padx=4, sticky="ew"
-        )
-        self.upload_button = add_action("Upload local changes", self.stage_commit_push,
-                                        10, "Green.TButton")
-
-        # Comparison table
-        compare_frame = ttk.LabelFrame(body, text="Local folder compared with current GitHub branch",
-                                       style="Section.TLabelframe", padding=4)
-        compare_frame.grid(row=1, column=0, sticky="nsew", pady=(6, 5))
-        compare_frame.grid_rowconfigure(0, weight=1)
-        compare_frame.grid_columnconfigure(0, weight=1)
-
-        columns = ("status", "path", "local_size", "remote_size", "local_modified")
-        self.tree = ttk.Treeview(compare_frame, columns=columns, show="headings")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("path", text="Relative path")
-        self.tree.heading("local_size", text="Local size")
-        self.tree.heading("remote_size", text="GitHub size")
-        self.tree.heading("local_modified", text="Local modified")
-        self.tree.column("status", width=145, stretch=False, anchor="center")
-        self.tree.column("path", width=650, stretch=True)
-        self.tree.column("local_size", width=110, stretch=False, anchor="e")
-        self.tree.column("remote_size", width=110, stretch=False, anchor="e")
-        self.tree.column("local_modified", width=160, stretch=False, anchor="center")
-
-        yscroll = ttk.Scrollbar(compare_frame, orient="vertical", command=self.tree.yview)
-        xscroll = ttk.Scrollbar(compare_frame, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        yscroll.grid(row=0, column=1, sticky="ns")
-        xscroll.grid(row=1, column=0, sticky="ew")
-
-        self.tree.tag_configure("LOCAL ONLY", background=COLOR_LIGHT_BLUE)
-        self.tree.tag_configure("REMOTE ONLY", background=COLOR_LIGHT_ORANGE)
-        self.tree.tag_configure("DIFFERENT", background=COLOR_LIGHT_RED)
-        self.tree.tag_configure("IDENTICAL", background=COLOR_LIGHT_GREEN)
-        self.tree.tag_configure("ERROR", background=COLOR_LIGHT_PURPLE)
-
-        # Lower pane: activity log only
-        log_frame = ttk.LabelFrame(body, text="Activity log", style="Section.TLabelframe", padding=4)
-        log_frame.grid(row=2, column=0, sticky="nsew")
-        log_frame.grid_rowconfigure(0, weight=1)
-        log_frame.grid_columnconfigure(0, weight=1)
-        self.log_text = tk.Text(log_frame, bg=COLOR_LOG_BG, fg=COLOR_LOG_FG,
-                                insertbackground=COLOR_WHITE, wrap="none",
-                                font=("Consolas", 9), height=10)
-        log_y = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        log_x = ttk.Scrollbar(log_frame, orient="horizontal", command=self.log_text.xview)
-        self.log_text.configure(yscrollcommand=log_y.set, xscrollcommand=log_x.set)
-        self.log_text.grid(row=0, column=0, sticky="nsew")
-        log_y.grid(row=0, column=1, sticky="ns")
-        log_x.grid(row=1, column=0, sticky="ew")
-        self.log_text.tag_configure("INFO", foreground="#c9d6e2")
-        self.log_text.tag_configure("OK", foreground="#6ee7a0")
-        self.log_text.tag_configure("WARN", foreground="#ffd166")
-        self.log_text.tag_configure("ERROR", foreground="#ff7b72")
-        self.log_text.tag_configure("CMD", foreground="#7dd3fc")
-
-        # Footer
-        footer = tk.Frame(self, bg=COLOR_BG, padx=10, pady=0)
-        footer.grid(row=5, column=0, sticky="ew", pady=(0, 10))
-        footer.grid_columnconfigure(1, weight=1)
-        self.progress = ttk.Progressbar(footer, mode="indeterminate", length=220)
-        self.progress.grid(row=0, column=0, sticky="w", padx=(0, 12))
-        ttk.Label(footer, textvariable=self.main_status_var).grid(row=0, column=1, sticky="w")
-
-        self.log("Program started. No file scan has been performed yet.", "OK")
-        if not HAVE_DND:
-            self.log("Drag-and-drop package tkinterdnd2 is not installed; Browse still works.", "WARN")
-
-    # ------------------------------------------------------------------
-    # Thread-safe UI helpers
-    # ------------------------------------------------------------------
     def _drain_ui_queue(self) -> None:
+        """Apply worker-thread results safely on Tk's main UI thread."""
         try:
             while True:
                 kind, payload = self._ui_queue.get_nowait()
@@ -569,10 +451,13 @@ class GitHubSyncApp(BaseTk):
                 elif kind == "ownership_state":
                     text, state = payload  # type: ignore[misc]
                     self.ownership_status_var.set(str(text))
-                    color = {"ok": COLOR_GREEN_DARK, "warn": COLOR_ORANGE, "error": COLOR_RED}.get(str(state), COLOR_MUTED)
+                    color = {"ok": COLOR_GREEN_DARK, "warn": COLOR_ORANGE,
+                             "error": COLOR_RED}.get(str(state), COLOR_MUTED)
                     self.ownership_label.configure(fg=color)
                 elif kind == "compare_rows":
                     self._populate_compare_rows(payload)  # type: ignore[arg-type]
+                elif kind == "compare_summary":
+                    self.compare_summary_var.set(str(payload))
                 elif kind == "identity":
                     name, email = payload  # type: ignore[misc]
                     self.author_name_var.set(name)
@@ -1754,29 +1639,15 @@ class GitHubSyncApp(BaseTk):
     def pull_remote(self) -> None:
         try:
             folder = self._require_repo()
-        except GitError as exc:
-            messagebox.showerror("Pull", str(exc), parent=self)
-            return
-
-        dirty = self._git("status", "--porcelain", cwd=folder, check=False).stdout.strip()
-        if dirty:
-            messagebox.showwarning(
-                "Pull blocked for safety",
-                "The controlled folder has local changes. Commit/push them or intentionally resolve "
-                "them before pulling. This GUI will not auto-stash or overwrite those changes.",
-                parent=self,
-            )
-            return
-
-        if not messagebox.askyesno(
-            "Pull from GitHub",
-            "Pull the current GitHub branch into the controlled folder using FAST-FORWARD ONLY?\n\n"
-            "Git will abort instead of creating an automatic merge commit.",
-            parent=self,
-        ):
-            return
-
-        def task() -> None:
+            # Any spaces below the controlled root are normalized before Git.
+            self._normalize_spaces_in_controlled_tree(folder)
+            dirty = self._git("status", "--porcelain", cwd=folder, check=False).stdout.strip()
+            if dirty:
+                messagebox.showwarning(
+                    "Pull blocked for safety",
+                    "The controlled folder has local changes. Push them first, or resolve them before pulling.\n\n"
+                    "Pull will not overwrite uncommitted local work.", parent=self)
+                return
             self._git("fetch", "--prune", "origin", cwd=folder, timeout=300)
             remote_ref = self._remote_ref(folder)
             if not remote_ref:
@@ -1784,16 +1655,55 @@ class GitHubSyncApp(BaseTk):
             remote_branch = remote_ref.split("/", 1)[1]
             current = self._current_branch(folder)
             if current != remote_branch:
-                raise GitError(
-                    f"Local branch '{current}' differs from GitHub default branch '{remote_branch}'.\n"
-                    "The GUI will not switch branches automatically when doing so could alter files."
-                )
-            self._git("pull", "--ff-only", "origin", remote_branch,
-                      cwd=folder, timeout=300)
-            self._update_remote_state_worker(folder)
-            self.log("Pull completed with fast-forward-only policy.", "OK")
+                raise GitError(f"Local branch '{current}' differs from GitHub branch '{remote_branch}'.")
 
-        self.run_async("Pulling from GitHub...", task)
+            diff = self._git("diff", "--name-status", "HEAD.." + remote_ref, "--", cwd=folder, check=False)
+            added, replaced, deleted = [], [], []
+            for line in diff.stdout.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                code, path = parts[0], parts[-1]
+                if code.startswith("A"):
+                    added.append(path)
+                elif code.startswith("D"):
+                    deleted.append(path)
+                else:
+                    replaced.append(path)
+
+            if not (added or replaced or deleted):
+                messagebox.showinfo("Pull from GitHub", "Local folder is already up to date with GitHub.\n\nNothing will be changed.", parent=self)
+                return
+
+            def sample(items):
+                shown = "\n".join("  " + x for x in items[:12])
+                return shown + (f"\n  ... and {len(items)-12} more" if len(items) > 12 else "")
+            text = (f"PULL FROM GITHUB → LOCAL FOLDER\n\n"
+                    f"New local files: {len(added)}\nFiles replaced locally: {len(replaced)}\nFiles deleted locally: {len(deleted)}\n")
+            if replaced:
+                text += "\nFILES THAT WILL BE REPLACED LOCALLY:\n" + sample(replaced) + "\n"
+            if deleted:
+                text += "\nFILES THAT GITHUB DELETED AND WILL BE DELETED LOCALLY:\n" + sample(deleted) + "\n"
+            if not messagebox.askyesno("Confirm Pull from GitHub", text + "\nContinue?", parent=self):
+                return
+            if deleted and not messagebox.askyesno(
+                "Confirm local deletions",
+                f"FINAL DELETION CONFIRMATION\n\n{len(deleted)} local tracked file(s) will be deleted because GitHub deleted them.\n\n" + sample(deleted) + "\n\nDelete these local files?", parent=self):
+                return
+
+        except GitError as exc:
+            messagebox.showerror("Pull from GitHub", str(exc), parent=self)
+            return
+
+        def task() -> None:
+            self._git("fetch", "--prune", "origin", cwd=folder, timeout=300)
+            self._git("pull", "--ff-only", "origin", remote_branch, cwd=folder, timeout=300)
+            self._update_remote_state_worker(folder)
+            self.log("Pull completed. Confirmed GitHub changes were applied locally.", "OK")
+            self._ui_queue.put(("message_info", ("Pull complete", "Confirmed GitHub changes were applied to the controlled local folder.")))
+            self.after(100, self.compare_with_github)
+
+        self.run_async("Pulling confirmed changes from GitHub...", task)
 
     def show_git_status(self) -> None:
         try:
@@ -1880,6 +1790,11 @@ class GitHubSyncApp(BaseTk):
             ))
             self._ui_queue.put(("compare_rows", rows))
             summary = " | ".join(f"{k}: {v}" for k, v in counts.items())
+            if counts["LOCAL ONLY"] == 0 and counts["REMOTE ONLY"] == 0 and counts["DIFFERENT"] == 0:
+                display_summary = f"LOCAL AND GITHUB MATCH — {counts['IDENTICAL']} unchanged file(s); 0 new; 0 different; 0 missing."
+            else:
+                display_summary = summary
+            self._ui_queue.put(("compare_summary", display_summary))
             self.log("Comparison summary: " + summary, "OK")
             self._update_remote_state_worker(folder)
 
@@ -1935,101 +1850,99 @@ class GitHubSyncApp(BaseTk):
     def stage_commit_push(self) -> None:
         try:
             folder = self._require_repo()
-            self._remote_url()  # Ensure a URL is visible/configured.
+            self._remote_url()
+            self._normalize_spaces_in_controlled_tree(folder)
+            # Fetch FIRST. The confirmation must describe the exact current local-vs-GitHub state.
+            self._git("fetch", "--prune", "origin", cwd=folder, timeout=300)
+            remote_ref = self._remote_ref(folder)
+            local_files = self._local_git_visible_files(folder)
+            remote_files = self._remote_tree(folder, remote_ref) if remote_ref else {}
+            changed = self._changed_paths_against_remote(folder, remote_ref) if remote_ref else set()
+            new_files = sorted(local_files - set(remote_files), key=str.lower)
+            deleted_files = sorted(set(remote_files) - local_files, key=str.lower)
+            replaced_files = sorted((local_files & set(remote_files)) & changed, key=str.lower)
+
+            if not (new_files or replaced_files or deleted_files):
+                self.compare_summary_var.set(f"LOCAL AND GITHUB MATCH — {len(local_files)} unchanged file(s). Nothing to push.")
+                messagebox.showinfo("Push to GitHub", "Local folder and GitHub already match.\n\nThere is nothing to push.", parent=self)
+                return
+
+            def sample(items):
+                shown = "\n".join("  " + x for x in items[:12])
+                return shown + (f"\n  ... and {len(items)-12} more" if len(items) > 12 else "")
+
+            summary = (f"PUSH LOCAL FOLDER → GITHUB\n\nControlled folder:\n{folder}\n\n"
+                       f"New on GitHub: {len(new_files)}\n"
+                       f"Replace on GitHub: {len(replaced_files)}\n"
+                       f"Delete from GitHub: {len(deleted_files)}\n")
+            if new_files:
+                summary += "\nNEW FILES:\n" + sample(new_files) + "\n"
+            if replaced_files:
+                summary += "\nFILES THAT WILL BE REPLACED ON GITHUB:\n" + sample(replaced_files) + "\n"
+            if deleted_files:
+                summary += "\nFILES THAT WILL BE DELETED FROM GITHUB:\n" + sample(deleted_files) + "\n"
+            if not messagebox.askyesno("Confirm Push to GitHub", summary + "\nContinue with this push?", parent=self):
+                return
+            if deleted_files and not messagebox.askyesno(
+                "Confirm GitHub deletions",
+                f"FINAL DELETION CONFIRMATION\n\n{len(deleted_files)} GitHub file(s) will be deleted because they are not present in the controlled local folder.\n\n" + sample(deleted_files) + "\n\nDelete these files from GitHub?", parent=self):
+                return
+
+            approved = (tuple(new_files), tuple(replaced_files), tuple(deleted_files))
         except GitError as exc:
-            messagebox.showerror("Upload", str(exc), parent=self)
-            return
-
-        commit_message = self.commit_message_var.get().strip()
-        if not commit_message:
-            messagebox.showwarning("Commit message", "Enter a commit message before uploading.", parent=self)
-            return
-
-        # Preview uses git status only inside the controlled repository.
-        status_result = self._git("status", "--porcelain", "-z", cwd=folder, check=False)
-        changes = self._parse_porcelain(status_result.stdout)
-        new_count = sum(1 for kind, _ in changes if kind == "new")
-        modified_count = sum(1 for kind, _ in changes if kind == "modified")
-        deleted_count = sum(1 for kind, _ in changes if kind == "deleted")
-        renamed_count = sum(1 for kind, _ in changes if kind == "renamed")
-
-        summary = (
-            f"Controlled folder:\n{folder}\n\n"
-            f"New files: {new_count}\n"
-            f"Modified files: {modified_count}\n"
-            f"Deleted files: {deleted_count}\n"
-            f"Renamed files: {renamed_count}\n\n"
-            "Before Git runs, spaces in file/folder names are automatically converted to underscores.\n"
-            "Only files tracked/visible to Git inside this controlled folder are involved."
-        )
-        if deleted_count:
-            summary += (
-                "\n\nWARNING: deleted tracked files will also be deleted from GitHub after the push."
-            )
-
-        if not messagebox.askyesno("Confirm upload", summary + "\n\nContinue?", parent=self):
+            messagebox.showerror("Push to GitHub", str(exc), parent=self)
             return
 
         def task() -> None:
-            # Ensure repository-local identity is defined if a commit will be needed.
-            name = self._git("config", "--local", "--get", "user.name", cwd=folder,
-                             check=False).stdout.strip()
-            email = self._git("config", "--local", "--get", "user.email", cwd=folder,
-                              check=False).stdout.strip()
-            if changes and (not name or not email):
-                raise GitError(
-                    "Commit author identity is not configured for this repository.\n\n"
-                    "Enter Commit author name and Commit author email, then click "
-                    "'Save identity for this repository only'."
-                )
+            name = self._git("config", "--local", "--get", "user.name", cwd=folder, check=False).stdout.strip()
+            email = self._git("config", "--local", "--get", "user.email", cwd=folder, check=False).stdout.strip()
+            if not name or not email:
+                raise GitError("Commit identity is not configured. Enter author name/email and save it for this repository.")
 
-            # Fetch immediately before push so we can refuse a non-fast-forward upload.
+            # Re-fetch and recompute. Never push a state different from the state the user approved.
             self._git("fetch", "--prune", "origin", cwd=folder, timeout=300)
-            remote_ref = self._remote_ref(folder)
-            if remote_ref and self._has_head(folder):
-                ahead, behind = self._ahead_behind(folder, remote_ref)
-                if behind is None:
-                    raise GitError(
-                        "Local and GitHub histories cannot be safely compared. The GUI will not "
-                        "force-push or rewrite history automatically."
-                    )
-                if behind > 0:
-                    raise GitError(
-                        f"GitHub contains {behind} commit(s) that are not in the local repository.\n\n"
-                        "Upload was stopped before staging/committing. Pull the GitHub changes first "
-                        "or review the histories manually."
-                    )
+            rr = self._remote_ref(folder)
+            lf = self._local_git_visible_files(folder)
+            rf = self._remote_tree(folder, rr) if rr else {}
+            ch = self._changed_paths_against_remote(folder, rr) if rr else set()
+            now = (tuple(sorted(lf-set(rf), key=str.lower)),
+                   tuple(sorted((lf & set(rf)) & ch, key=str.lower)),
+                   tuple(sorted(set(rf)-lf, key=str.lower)))
+            if now != approved:
+                raise GitError("The local/GitHub state changed after the confirmation. Push was aborted. Click Fetch (Preview) and review again.")
+
+            if rr and self._has_head(folder):
+                ahead, behind = self._ahead_behind(folder, rr)
+                if behind is None or behind > 0:
+                    raise GitError("GitHub changed since the local history was prepared. Push stopped; Pull from GitHub first.")
 
             self._git("add", "-A", cwd=folder)
             staged = self._git("diff", "--cached", "--quiet", cwd=folder, check=False)
-            if staged.returncode == 1:
-                self._git("commit", "-m", commit_message, cwd=folder, timeout=300)
-                self.log("Commit created successfully.", "OK")
-            elif staged.returncode == 0:
-                self.log("No staged file changes require a new commit.", "INFO")
-            else:
-                raise GitError(staged.stderr.strip() or "Unable to inspect staged changes.")
+            if staged.returncode == 0:
+                raise GitError("Internal safety check: preview showed changes but Git staged no changes. Push aborted.")
+            if staged.returncode != 1:
+                raise GitError(staged.stderr.strip() or "Unable to verify staged changes.")
 
-            if not self._has_head(folder):
-                raise GitError("There is no local commit to push.")
-
+            n, r, d = map(len, approved)
+            parts=[]
+            if n: parts.append(f"{n} new")
+            if r: parts.append(f"{r} modified")
+            if d: parts.append(f"{d} deleted")
+            commit_message = "Push local changes: " + ", ".join(parts)
+            self._git("commit", "-m", commit_message, cwd=folder, timeout=300)
             current = self._current_branch(folder)
-            upstream = self._git("rev-parse", "--abbrev-ref", "--symbolic-full-name",
-                                 "@{u}", cwd=folder, check=False)
+            upstream = self._git("rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", cwd=folder, check=False)
             if upstream.returncode == 0 and upstream.stdout.strip():
                 self._git("push", cwd=folder, timeout=300)
             else:
                 self._git("push", "-u", "origin", current, cwd=folder, timeout=300)
-
             self._git("fetch", "--prune", "origin", cwd=folder, timeout=300)
             self._update_remote_state_worker(folder)
-            self.log("Upload completed successfully.", "OK")
-            self._ui_queue.put(("message_info", (
-                "Upload complete",
-                "The committed changes from the controlled folder were pushed to GitHub."
-            )))
+            self.log("Push completed successfully.", "OK")
+            self._ui_queue.put(("message_info", ("Push complete", "The confirmed local changes were pushed to GitHub.")))
+            self.after(100, self.compare_with_github)
 
-        self.run_async("Staging, committing, and pushing...", task)
+        self.run_async("Pushing confirmed changes to GitHub...", task)
 
     def _parse_porcelain(self, text: str) -> list[tuple[str, str]]:
         """Parse enough of `git status --porcelain -z` for a safe summary."""
