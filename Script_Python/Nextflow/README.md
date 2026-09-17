@@ -9,10 +9,14 @@ Tab 1 — Workflow spreadsheet: Draw the pipeline using data words, program IDs,
 
 Tab 2 — Program + Data definitions: Define each program/script and each input, intermediate, or output data word.
 ![Tab2](Screenshots/Easy_02_Programs and Data configuration.jpg)
+
 Tab 3 — WASJ metadata + pairing: Define how related samples are matched using metadata, such as Patient_ID and Tumor/Normal status.
+
 ![Tab3](Screenshots/Easy_02_Programs and Data configuration.jpg)
 Tab 4 — Validation + Diagram: Check the pipeline for errors and display how NextDash interprets the workflow.
+
 ![Tab4](Screenshots/Easy_04_Press Generate Project.jpg)
+
 Tab 5 — Generate main.nf: Generate the Nextflow main.nf workflow and configure output folders, WSL paths, and caching.
 
 Words starting with numbers: Program IDs, such as 1.Star, 2.FeaturesCount, or only a number like 05. Color Blue or lihght green.
