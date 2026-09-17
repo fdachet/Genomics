@@ -1,2 +1,0 @@
-# Genomics
-Comprehensible Genomics Panel

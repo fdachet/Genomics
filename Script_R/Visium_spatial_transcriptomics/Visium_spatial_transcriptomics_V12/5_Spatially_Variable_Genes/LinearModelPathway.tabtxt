@@ -1,0 +1,4 @@
+Cytotoxic Immune Cells Attacking tumors	IFNG	GZMB	GZMA	PRF1	-VEGFA	-TGFB1	
+Tumor counter-response	CD274	PDCD1LG2	IDO1	TGFB1			
+Tumor Hypoxic	HIF1A	CA9	VEGFA	SLC2A1	-PRF1	-GZMB	-IFNG
+Tumor Disabling Antigen Presentation	-B2M	-TAP1	-TAP2	-HLA-A			
