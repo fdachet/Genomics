@@ -53,7 +53,7 @@ Cytotoxic immune activity =
 
 The numbers are not automatically “correct”; they are a transparent model chosen by the investigator and should be justified from the question, published evidence, and validation data. The score is calculated from normalised expression, not raw counts, so one highly sequenced spot does not look more biologically active only because it captured more RNA. In this sense the custom weighted model can replace an unweighted pathway list when the question needs direction, relative importance, and use gene expression repression.
 
-The repository includes examples in [`Full_Pipeline/5.LinearModelPathway.tabtxt`](Full_Pipeline/5.LinearModelPathway.tabtxt): cytotoxic immune attack, tumour counter-response, hypoxia, and loss of antigen presentation. A gene can also be written as `+2*GENE` or `-3*GENE` in a definition file to set its weight.
+The repository includes examples in [`5.LinearModelPathway.tabtxt`](5.LinearModelPathway.tabtxt): cytotoxic immune attack, tumour counter-response, hypoxia, and loss of antigen presentation. A gene can also be written as `+2*GENE` or `-3*GENE` in a definition file to set its weight.
 
 ## Gene signatures: a clinical way to ask a spatial question
 
@@ -77,7 +77,7 @@ This approach can be powerful in cancer because it may detect active signalling 
 
 Across multiple independent cohorts, the most credible pathways are usually those that show the same direction of footprint activity in multiple spots inside comparable regions and remain associated with the biological/clinical question after each sample has been analysed separately. The footprint score is a strong prioritisation tool for pathway activity. 
 
-The custom database format for Step 7 is documented in [`Full_Pipeline/7.Fingerprint_Pathways.tabtxt`](Full_Pipeline/7.Fingerprint_Pathways.tabtxt). It records organism, source, pathway identifier/name, gene, direction, model P value/FDR, and a specificity weight. These fields make the origin and importance of each footprint gene visible rather than hidden in a black box.
+The custom database format for Step 7 is documented in [`7.Fingerprint_Pathways.tabtxt`](7.Fingerprint_Pathways.tabtxt). It records organism, source, pathway identifier/name, gene, direction, model P value/FDR, and a specificity weight. These fields make the origin and importance of each footprint gene visible rather than hidden in a black box.
 
 ## Screenshots and the main parameters
 
@@ -158,17 +158,17 @@ The custom database format for Step 7 is documented in [`Full_Pipeline/7.Fingerp
 ## Software and repository layout
 
 ```text
-Full_Pipeline/00_Install_R_Packages.R
-Full_Pipeline/1.SpaceRanger_Rscript.R
-Full_Pipeline/2.Spatial_QC_Rscript.R
-Full_Pipeline/3.Spatial_Normalization.R
-Full_Pipeline/4.Spatial_Clustering_Rscript.R
-Full_Pipeline/5.Spatially_VariableGenes&LinearModelPathways.R
-Full_Pipeline/6.Deconvolution_Region_DE_Rscript.R
-Full_Pipeline/7.Pathway_Footprint_Analysis_Using_Perturbation_Derived_Gene_Weights_v3.R
-Full_Pipeline/8.Edit_Gene_Expression_Matrix.R
-Full_Pipeline/5.LinearModelPathway.tabtxt
-Full_Pipeline/7.Fingerprint_Pathways.tabtxt
+00_Install_R_Packages.R
+1.SpaceRanger_Rscript.R
+2.Spatial_QC_Rscript.R
+3.Spatial_Normalization.R
+4.Spatial_Clustering_Rscript.R
+5.Spatially_VariableGenes&LinearModelPathways.R
+6.Deconvolution_Region_DE_Rscript.R
+7.Pathway_Footprint_Analysis_Using_Perturbation_Derived_Gene_Weights_v3.R
+8.Edit_Gene_Expression_Matrix.R
+5.LinearModelPathway.tabtxt
+7.Fingerprint_Pathways.tabtxt
 Screenshots/
 Results_of_Custom_Pathway_projection/
 ```
