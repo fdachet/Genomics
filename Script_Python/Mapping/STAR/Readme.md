@@ -1,29 +1,24 @@
 # STAR GUI for RNA-seq mapping
 
-`Star_V52.py` is a small Windows/Tkinter interface for running [STAR](https://github.com/alexdobin/STAR) through WSL. It is made for the practical part of RNA-seq analysis: selecting FASTQ files, checking their pairing, building readable STAR commands, and running several samples without manually rewriting long command lines each time.
+`Star_V52.py` is a Windows/Tkinter interface for running [STAR](https://github.com/alexdobin/STAR) through WSL. It is made for the practical part of RNA-seq analysis: selecting FASTQ files, checking their pairing, building readable STAR commands, and running several samples without manually rewriting long command lines each time.
 
-It is not a replacement for checking mapping quality. The GUI makes the STAR options more visible, but the final judgement still comes from the STAR log files, the BAM files, and the biology of the experiment.
 
-## The important difference: genome index versus mapping
+## Genome index then mapping
 
-These two operations are easy to confuse at the beginning, but they do very different jobs.
 
 | Operation | Input | What STAR creates | When it is needed |
 | --- | --- | --- | --- |
 | **Build Genome Index** | Reference genome FASTA, optionally a GTF annotation | A `genomeDir` folder containing STAR lookup/index files | Usually once per genome + annotation version. Rebuild only when the reference, annotation, or important index setting changes. |
 | **Align Reads** | FASTQ reads from each sample and an existing `genomeDir` | SAM/BAM alignments, splice-junction table, logs, and optionally unmapped FASTQ | Once for every sequencing sample (or again if mapping settings change). |
 
-An index is like preparing the very large book index before reading a pile of documents. STAR uses it to rapidly find where each sequencing read belongs in the reference genome. Mapping is the later step where the real reads are compared against this prepared reference. Do **not** point `STAR Index (genomeDir)` at a FASTA file: it must point to the folder produced by **Build Genome Index**.
-
-For ordinary human RNA-seq, use the same genome assembly and compatible annotation everywhere. For example, do not create an index from GRCh38 FASTA and then interpret the results with a GTF intended for another assembly or another annotation release.
 
 ## Requirements
 
-- Windows with WSL available (`wsl` must open from PowerShell or Command Prompt).
+- Windows with WSL available.
 - STAR installed inside the WSL Linux distribution and available as `STAR` on the Linux `PATH`.
 - `samtools` installed in WSL if the **Create BAM index (.bai)** option is used.
 - Read access to FASTQ, FASTA and GTF files, plus write access to the output folder.
-- Enough RAM and disk space. Genome indexing and coordinate-sorted BAM files can use a lot of both.
+- Enough RAM and disk space. Genome indexing and coordinate-sorted BAM files can use a lot of both (64GB RAM with fast SSD is recomanded for human genome indexing and mapping samples in parallel).
 
 The GUI converts normal Windows paths such as `P:\Data\sample.fastq.gz` into WSL paths such as `/mnt/p/Data/sample.fastq.gz`. When the output folder is on a Windows-mounted drive (`/mnt/...`), it automatically sends STAR temporary work to Linux `/tmp`. This avoids a known FIFO/temporary-file problem on NTFS mounted drives. The temporary folder is cleaned after the sample finishes, including after a failure when possible.
 
@@ -35,7 +30,7 @@ The GUI converts normal Windows paths such as `P:\Data\sample.fastq.gz` into WSL
    python Star_V52.py
    ```
 
-2. If this is a new reference, choose **Build Genome Index** and create the `genomeDir` first.
+2. If this is a new reference, choose **Build Genome Index** and create the `genomeDir` first, be carefull the memory.
 3. Choose **Align Reads** for the routine analysis.
 4. Select the reads folder, click **Scan Reads**, review the detected samples, and select the ones to run.
 5. Select the existing **STAR Index (genomeDir)** and an output directory.
@@ -81,15 +76,15 @@ The GUI adds useful alignment tags (`NH`, `HI`, `AS`, `nM`, `NM`, `MD`, `jM`, `j
 
 ### Mapping accuracy: Default, Relaxed, Strict
 
-The accuracy selection controls STAR filters; it does not make a bad library good. **Default** is the sensible reference run for most datasets. Run relaxed mode only when there is a biological reason to rescue weak/partial reads, and compare its `Log.final.out` with Default.
+**Default** is the sensible reference run for most datasets. Run relaxed mode is usefull when there is a biological reason to rescue weak/partial reads, and compare its `Log.final.out` with Default.
 
 | Mode | Main values used by the GUI | When it can help | Main caution |
 | --- | --- | --- | --- |
 | **Default** | Uses STAR internal defaults (mismatch max 10; mismatch fraction 0.30; multimap max 10; minimum score/matched fraction 0.66). | Standard RNA-seq baseline. | Still check mapping rate, mismatch rate, and rRNA/repeat behaviour. |
 | **Relaxed** | Mismatch max 20; mismatch fraction 0.20; multimap max remains 10; minimum score and matched fraction 0.33. | Degraded tissue, low-input RNA, or an exploratory search for reproducible low-expression RNA signal. | More partial/weak alignments survive. Confirm that any gain is mainly unique or low-multimap reads on credible exons/junctions, not random/repeat signal. The GUI limits BAM lines for multimappers in this mode to help control output size. |
-| **Strict** | Mismatch max 3; mismatch fraction 0.03; multimap max 5; minimum score and matched fraction 0.70. | A conservative sensitivity analysis or a dataset where incorrect matches are a major concern. | It will discard more real reads, particularly shorter, lower-quality or biologically variable reads. |
+| **Strict** | Mismatch max 3; mismatch fraction 0.03; multimap max 5; minimum score and matched fraction 0.70. | A conservative sensitivity analysis or a dataset where incorrect matches are a major concern. | It will discard lot of real reads, particularly shorter, lower-quality or biologically variable reads. |
 
-For a relaxed comparison, look for an increase in uniquely mapped reads and reasonable mapped length. Be suspicious if the multiple-loci fraction, reads mapping to too many loci, or mismatch rate rises a lot. For RNA-seq, rescued reads should still support known exons and splice junctions and be reproducible across relevant samples.
+
 
 ### Genome / gene structure
 
@@ -122,10 +117,10 @@ For each sample, STAR commonly creates files using the selected sample prefix:
 - `*_Aligned.sortedByCoord.out.bam` — coordinate-sorted reads when that output was selected.
 - `*.bai` — BAM index, when requested.
 - `*_SJ.out.tab` — detected splice junctions (unless running the unmapped-only option, where the script removes alignment-associated files).
-- `*_Unmapped.out.mate1` / `mate2` — unmapped reads when saving them; the GUI can move and rename them to the chosen unmapped folder.
+- `*_Unmapped.out.mate1` / `mate2` — unmapped reads when saving them; the GUI can move and rename them to the chosen unmapped folder and be used in other pipelines (e.g. host depletion for Kraken2)
 - `*_Log.out` and related STAR logs — useful if a job fails or an option needs auditing.
 
-Do not judge a sample only from “mapping completed”. A high mapping rate can still be wrong when the reference is inappropriate, while a lower rate can be expected for degraded material, mixed species, tumour samples, targeted libraries, or an incomplete reference. Compare samples within the same cohort and investigate strong outliers.
+
 
 ## Implementation notes
 
@@ -133,7 +128,7 @@ Do not judge a sample only from “mapping completed”. A high mapping rate can
 - All commands are shown before execution. This makes the workflow more transparent and gives a final chance to stop an incorrect run.
 - The generated shell commands run in a background thread so the GUI and log remain responsive.
 - Progress is updated every ten seconds from completed sample markers; the remaining-time estimate is approximate and becomes better after the first samples finish.
-- The script increases the Linux open-file limit before running STAR. This is intended to prevent file-descriptor errors on large jobs; ensure the WSL environment permits the configured privilege step before relying on it in a shared/production environment.
+- The script increases the Linux open-file limit before running STAR. This is intended to prevent file-descriptor errors on large jobs; ensure the WSL environment permits the configured privilege step before relying on it in a multi user shared/production environment.
 
 ## Files in this folder
 
@@ -142,7 +137,3 @@ Star_V52.py                         STAR GUI source code
 Screenshot/Mapping_Relaxed.png      Example of the Relaxed alignment interface
 Readme.md                           This documentation
 ```
-
-## Interpretation boundary
-
-This program prepares and runs read alignment. It does not perform gene counting, transcript quantification, differential expression, variant calling, or clinical interpretation. Keep the STAR version and all settings with the results, then use the logs and downstream QC before drawing biological conclusions.
