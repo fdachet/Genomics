@@ -1,0 +1,6 @@
+name: ctdna_manta
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - manta=1.6.0

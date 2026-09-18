@@ -1,0 +1,18 @@
+name: ctdna_core
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.11
+  - pip
+  - tk
+  - nextflow
+  - fastqc
+  - bwa
+  - bwa-mem2
+  - samtools
+  - bcftools
+  - fgbio-minimal
+  - spades
+  - minimap2
+  - gzip

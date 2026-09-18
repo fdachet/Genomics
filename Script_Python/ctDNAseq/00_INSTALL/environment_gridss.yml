@@ -1,0 +1,6 @@
+name: ctdna_gridss
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - gridss=2.13.2

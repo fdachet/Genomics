@@ -1,0 +1,6 @@
+name: ctdna_svaba
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - svaba=1.2.0

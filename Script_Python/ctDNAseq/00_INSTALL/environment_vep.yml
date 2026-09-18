@@ -1,0 +1,6 @@
+name: ctdna_vep
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - ensembl-vep=116.0

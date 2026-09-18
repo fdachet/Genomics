@@ -1,0 +1,6 @@
+name: ctdna_delly
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - delly
