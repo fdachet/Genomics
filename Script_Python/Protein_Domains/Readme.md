@@ -7,11 +7,11 @@ The pipeline is deliberately split into steps so that quality can be checked bef
 
 ## Why isoforms and protein domains matter
 
-The simple idea **“1 gene → 1 protein”** is often not true enough for genomics. One gene can make several RNA isoforms through alternative transcription start sites, splicing, and transcript termination. These isoforms can have different coding potential and may produce proteins with different lengths, protein domains, signal peptides, transmembrane regions, predicted subcellular localisation, or NMD sensitivity. Some isoforms have only small “leaked” coding activity, or may be mostly non-coding, but can still be relevant to the interpretation.
+The simple idea **“1 gene → 1 protein”** is often not true enough for genomics. One gene can make several RNA isoforms through alternative transcription start sites, splicing, and transcript termination. These isoforms can have different coding potential and may produce proteins with different lengths, protein domains, signal peptides, transmembrane regions, predicted subcellular localisation, or NMD sensitivity. Some isoforms have only small “leaked” coding activity, or may be mostly non-coding, and still be very relevant to the interpretation.
 
-As a result, a gene-level expression change alone may not explain the biological effect. A gene can keep a similar overall expression while its preferred isoform changes. The resulting protein may lose a functional domain, gain a membrane segment, no longer be predicted to reach the same cell compartment, or become unlikely to produce a stable protein. This pipeline is designed to make those possibilities visible.
+As a result, a gene-level expression change alone will not explain the biological effect. A gene can keep a similar overall expression while its preferred isoform changes. The resulting protein may lose a functional domain, gain a membrane segment, no longer be predicted to reach the same cell compartment, or become unlikely to produce a stable protein. This pipeline is designed to make those possibilities visible.
 
-The `Results/` folder contains real examples from early-grade kidney cancer (Normal versus CCRCC) to illustrate this point.
+The `Results/` folder contains real examples from early-grade kidney cancer (paired Normal versus CCRCC) to illustrate this point.
 
 ## Workflow at a glance
 
@@ -48,8 +48,6 @@ Step 04 is not a single prediction. It combines several sources of evidence for 
 | **Coding potential** | Is the transcript likely to encode a protein, or is it more likely non-coding? |
 | **NMD information** | Is the transcript likely to be sensitive to nonsense-mediated decay, which may limit stable protein production? |
 
-No one prediction should be treated as proof. The interest comes from combining isoform usage with several functional predictions and the underlying read/transcript evidence.
-
 ## Screenshots: what happens at each stage
 
 ### Figure 1 — Step 00: STAR mapping starts with the raw reads
@@ -68,11 +66,11 @@ No one prediction should be treated as proof. The interest comes from combining 
 
 ![PrepDE GUI](Screenshots/Step_02.jpg)
 
-*Figure 3. PrepDE reads the StringTie PASS2 output and produces two tables: one for gene-level counts and one for isoform-level counts. The screen lists every detected sample and reports whether it is valid before the matrices are generated. This is a useful pause point: the sample names in the matrices should correspond exactly to the biological groups in the study design (for example, Normal and CCRCC). A valid gene matrix is useful, but the isoform matrix is the key input for discovering changes in isoform usage.*
+*Figure 3. PrepDE reads the StringTie PASS2 output and produces two tables: one for gene-level counts and one for isoform-level counts. The screen lists every detected sample and reports whether it is valid before the matrices are generated. This is a useful pause point: the sample names in the matrices should correspond exactly to the biological groups in the study design (for example, Normal and CCRCC). A valid gene matrix is still useful, but the isoform matrix is the key input for discovering changes in isoform usage.*
 
 ### Figure 4 — Step 03: find changes in isoform usage and create sequences
 
-Step 03 is run with `Step03_R_PrepareSequence_AAs_and_NTs.R` rather than a separate GUI. It uses the isoform count matrix and the study design to identify candidate isoform switches, then prepares the nucleotide and predicted amino-acid sequences required for the next step. At this stage, check that the comparison, statistical threshold, and selected samples answer the intended biological question. The result is not yet a claim about protein function—it is a shortlist of isoforms that need functional annotation.
+Step 03 is run with `Step03_R_PrepareSequence_AAs_and_NTs.R` rather than a separate GUI. It uses the isoform count matrix and the study design to identify candidate isoform switches, then prepares the nucleotide and predicted amino-acid sequences required for the next step. At this stage, check that the comparison, statistical threshold, and selected samples answer the intended biological question.
 
 ### Figure 5 — Step 04: annotate the possible protein consequences
 
@@ -90,13 +88,13 @@ Step 03 is run with `Step03_R_PrepareSequence_AAs_and_NTs.R` rather than a separ
 
 ![TNFRSF12A isoform-switch result](Results/EMT/TNFRSF12A_ENSG00000006327_MembLysoCytoNucl.png)
 
-*Figure 7. TNFRSF12A is a clear example for interpreting protein topology. The protein maps show isoforms with different combinations of signal peptide, extracellular/intracellular regions, transmembrane helix, and TNFRSF12A domain annotations. In the lower panels, the orange and blue bars compare CCRCC with Normal expression and isoform use. A shifted isoform fraction can therefore mean more than “the gene went up or down”: it may change which form of a membrane-associated receptor-related protein is most represented. This is a prediction to investigate biologically, not by itself proof of protein abundance or activity.*
+*Figure 7. TNFRSF12A is a clear example for interpreting protein topology. The protein maps show isoforms with different combinations of signal peptide, extracellular/intracellular regions, transmembrane helix, and TNFRSF12A domain annotations. In the lower panels, the orange and blue bars compare CCRCC with Normal expression and isoform use. A shifted isoform fraction can therefore mean more than “the gene went up or down”: it may change which form of a membrane-associated receptor-related protein is most represented. This is a prediction to investigate biologically.*
 
 ### Figure 8 — Step 05 result: PTGER3 illustrates an isoform switch inside a membrane receptor gene
 
 ![PTGER3 isoform-switch result](Results/RenalFunction/PTGER3_ENSG00000050628_Memb.png)
 
-*Figure 8. PTGER3 contains several coding isoforms with different protein lengths and domain/topology maps. The coloured features identify predicted extracellular/intracellular regions, transmembrane helices, and 7TM-GPCR-related domains. The bar plots show that gene expression and isoform usage are different measurements: some isoforms change significantly in usage even when others do not. For a membrane receptor gene, this is biologically interesting because changing the preferred transcript can potentially change receptor structure, membrane placement, or signalling capacity. The figure gives a reason to prioritise the gene for validation; it does not replace experimental confirmation.*
+*Figure 8. PTGER3 contains several coding isoforms with different protein lengths and domain/topology maps. The coloured features identify predicted extracellular/intracellular regions, transmembrane helices, and 7TM-GPCR-related domains. The bar plots show that gene expression and isoform usage are different measurements: some isoforms change significantly in usage even when others do not. For a membrane receptor gene, this is biologically interesting because changing the preferred transcript can potentially change receptor structure, membrane placement, or signalling capacity. The figure gives a reason to prioritise the gene for validation.*
 
 ## How to read a final isoform figure
 
@@ -124,6 +122,3 @@ Results/                                  Example Normal-versus-CCRCC isoform fi
 
 The wrapper applications orchestrate external bioinformatics software. Depending on the stages you run, install and configure STAR, samtools, StringTie, gffread, PrepDE, R with IsoformSwitchAnalyzeR, PFAM/HMMER, SignalP, IUPred2A, DeepTMHMM, DeepLoc2, and the coding-potential tool used by your installation. The GUIs expose paths, tests, run logs, and settings so that each dependency can be checked before a long run.
 
-## Interpretation boundary
-
-This pipeline is designed to generate and prioritise biologically meaningful hypotheses from RNA-seq data. Domain, localisation, topology, coding-potential, and NMD outputs are computational predictions; they should be interpreted with the RNA-seq evidence, known biology, and independent experimental validation where a clinical or mechanistic conclusion is required.
