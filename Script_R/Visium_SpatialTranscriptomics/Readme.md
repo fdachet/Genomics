@@ -4,7 +4,7 @@ This repository is a complete R workflow for analysing 10x Genomics Visium spati
 
 For cancer research, the useful question is often not only “which gene is high?” but “where in the tumour is a biological programme active?” A tumour section can contain cancer cells, immune cells, stroma, necrosis, vessels, and normal tissue in close proximity. Spatial analysis helps a clinician or scientist ask whether immune activity is concentrated at the invasive edge, whether hypoxia is localised in a tumour core, or whether a region may be avoiding antigen presentation.
 
-> **Important:** the custom pathway maps in `Results_of_Custom_Pathway_projection/` are artificial examples made to demonstrate the projection method. They are not results from a real patient cohort and should not be interpreted as clinical findings.
+> **Important:** the custom pathway maps in `Results_of_Custom_Pathway_projection/` are artificial examples made to demonstrate the projection method.
 
 ## The full workflow
 
@@ -30,19 +30,19 @@ For cancer research, the useful question is often not only “which gene is high
 | **5** | Which genes and biologically defined signatures show a non-random pattern across the tissue? | Select the expression layer and signature definition deliberately; inspect spatial significance and not only a top-N rank. |
 | **6** | Which cell types or mixtures may explain each region, and what differs between regions? | Use an appropriate annotated scRNA-seq reference; do not treat spots from one section as independent patients. |
 | **7** | Which signalling pathways leave an active or repressed transcriptional footprint in each spot? | Check gene coverage, footprint thresholds, selected pathways, and within-tissue cut-offs. |
-| **8** | Can a Seurat expression layer be inspected/exported/edited for pipeline testing? | Preserve the original RDS and rerun downstream steps after any deliberate edit. |
+| **8** | Seurat object inspected, edited and transfered for pipeline testing | Preserve the original RDS and rerun downstream steps after any deliberate edit (to be sure to not break the normalisation steps). |
 
 ## Why a standard pathway gene list is often not enough
 
-Many common pathway analyses use an unweighted “bag of genes”: if a gene belongs to a pathway, it counts once; if it is absent, it simply contributes nothing. This can be useful for a quick overview, but it is usually not adequate as the main way to score a carefully defined spatial cancer process.
+Many common pathway analyses use an unweighted “bag of genes”: if a gene belongs to a pathway, it counts once; if it is absent, it simply contributes nothing. This can be useful for a quick overview, but it is not realistic as the main way to score a carefully defined spatial cancer process.
 
-For a clinical example, a cytotoxic anti-tumour programme is not described well by a random collection of immune genes. High `IFNG`, `GZMB`, `GZMA`, and `PRF1` support cytotoxic immune activity. In contrast, high `VEGFA` or `TGFB1` may argue against the specific “cytotoxic cells attacking tumour” interpretation. Their **absence** can be informative too: if a gene expected to be strongly expressed is not present in a good-quality spot, that lack of expression may be evidence against the programme. Of course, absence from a low-RNA or low-coverage spot is not evidence—it may simply be a dropout. This is why Steps 2 and 3 must come first.
+For a clinical example, a cytotoxic anti-tumour programme is not described well by a random collection of immune genes. High `IFNG`, `GZMB`, `GZMA`, and `PRF1` support cytotoxic immune activity. In contrast, high `VEGFA` or `TGFB1` may argue against the specific “cytotoxic cells attacking tumour” interpretation. Their **absence** can be informative too: if a gene expected to be strongly expressed is not present in a good-quality spot, that lack of expression may be evidence against the programme. Of course, absence from a low-RNA or low-coverage spot is not evidence—it may simply be a dropout. 
 
-This workflow therefore uses **signed, weighted linear-model pathways** as the preferred approach for custom biological signatures. Each gene can be:
+To counter these problems this spatial transcriptomics workflow uses **signed, weighted linear-model pathways** as the preferred approach for custom biological signatures. Each gene can be:
 
 - **positive (`+`)** when higher normalised expression supports the programme;
-- **negative (`-`)** when higher expression argues against it;
-- **weighted**, so genes with stronger biological evidence contribute more than secondary markers.
+- **negative (`-`)** when **lower** normalised expression supports the programme;
+- **weighted**, so genes with more specific and stronger biological evidence contribute more to the pathway score per spot.
 
 For example:
 
@@ -51,14 +51,13 @@ Cytotoxic immune activity =
   +2×IFNG + 2×GZMB + 1×GZMA + 2×PRF1 − 1×VEGFA − 2×TGFB1
 ```
 
-The numbers are not automatically “correct”; they are a transparent model chosen by the investigator and should be justified from the question, published evidence, and validation data. The score is calculated from normalised expression, not raw counts, so one highly sequenced spot does not look more biologically active only because it captured more RNA. In this sense the custom weighted model can replace an unweighted pathway list when the question needs direction, relative importance, and negative evidence.
+The numbers are not automatically “correct”; they are a transparent model chosen by the investigator and should be justified from the question, published evidence, and validation data. The score is calculated from normalised expression, not raw counts, so one highly sequenced spot does not look more biologically active only because it captured more RNA. In this sense the custom weighted model can replace an unweighted pathway list when the question needs direction, relative importance, and use gene expression repression.
 
 The repository includes examples in [`Full_Pipeline/5.LinearModelPathway.tabtxt`](Full_Pipeline/5.LinearModelPathway.tabtxt): cytotoxic immune attack, tumour counter-response, hypoxia, and loss of antigen presentation. A gene can also be written as `+2*GENE` or `-3*GENE` in a definition file to set its weight.
 
 ## Gene signatures: a clinical way to ask a spatial question
 
-A **gene signature** is a small, explicit set of genes used to represent a biological state. It is not a diagnosis. It is a reproducible hypothesis such as:
-
+A **gene signature** is a small, explicit set of genes used to represent a predicted biological state. 
 - “Is this part of the tumour infiltrated by cytotoxic immune cells?”
 - “Is there a hypoxic region, possibly near poorly perfused or necrotic tissue?”
 - “Is the tumour showing an immune counter-response through PD-L1/PD-L2, IDO1, or TGFβ-related signalling?”
@@ -66,17 +65,17 @@ A **gene signature** is a small, explicit set of genes used to represent a biolo
 
 The important advantage of a spatial signature is that the score is shown **on the H&E image**. A high score can be compared with tumour nests, inflammation, fibrosis, necrosis, and anatomical location. This does not prove which cell type produced each RNA molecule—a Visium spot contains more than one cell—but it helps select regions for pathology review, immunohistochemistry, multiplex imaging, or deeper sequencing.
 
-## Perturbation footprints and PROGENy: measure the effect of a pathway
+## Perturbation footprints and PROGENy: measure the effect of a pathway using experimental data
 
 A pathway is not always active just because one of its own genes is expressed. For example, EGFR mRNA can be present without demonstrating that EGFR signalling is currently active. The more useful question is: **has pathway activation or repression changed the expression of its downstream responsive genes?**
 
-Step 7 uses this idea. A **perturbation footprint** is built from genes whose expression changes after a pathway is experimentally activated or inhibited. Each footprint gene has a direction (up/down) and a weight showing how strongly and specifically it responded in perturbation experiments. The pipeline looks for the combined downstream effect in each spatial spot.
+Step 7 uses this idea. A **perturbation footprint** is built from genes whose expression changes after a pathway is experimentally activated or inhibited. Each footprint gene has a direction (up/down), asignificance (to indicate how reproductible it has been found in a experimental cohort) and a weight showing how strongly and specifically it responded in perturbation experiments. The pipeline looks for the combined downstream effect in each spatial spot.
 
 **PROGENy** is a well-known set of such perturbation-derived pathway footprints. In the Step 7 screen, examples include EGFR, Hypoxia, JAK-STAT, MAPK, NFκB, p53, PI3K, TGFβ, TNFα, TRAIL, and VEGF. The selected number of “most significant PROGENy genes per pathway” controls how many of the strongest footprint genes are retained. More genes may capture a broader signal; fewer genes make a more focused signature.
 
 This approach can be powerful in cancer because it may detect active signalling even when the receptor or central pathway gene is not highly expressed in that spot. An active TGFβ programme, for example, may be recognised through the downstream genes it changes in tumour/stromal regions. Similarly, a hypoxia footprint can be more informative than one gene such as `HIF1A` alone.
 
-Across multiple independent cohorts, the most credible pathways are usually those that show the same direction of footprint activity in comparable regions and remain associated with the biological/clinical question after each sample has been analysed separately. The footprint score is a strong prioritisation tool, not magic proof of pathway activity. Replication, pathology review, and independent assays still matter.
+Across multiple independent cohorts, the most credible pathways are usually those that show the same direction of footprint activity in multiple spots inside comparable regions and remain associated with the biological/clinical question after each sample has been analysed separately. The footprint score is a strong prioritisation tool for pathway activity. 
 
 The custom database format for Step 7 is documented in [`Full_Pipeline/7.Fingerprint_Pathways.tabtxt`](Full_Pipeline/7.Fingerprint_Pathways.tabtxt). It records organism, source, pathway identifier/name, gene, direction, model P value/FDR, and a specificity weight. These fields make the origin and importance of each footprint gene visible rather than hidden in a black box.
 
@@ -110,7 +109,7 @@ The custom database format for Step 7 is documented in [`Full_Pipeline/7.Fingerp
 
 ![Spatial genes and linear-model pathway configuration](Screenshots/Step_05.jpg)
 
-*Figure 5. This is the custom-signature screen. **Spatial selection algorithm** chooses Moran's I, mark variogram, or both to find genes with non-random spatial structure; **variable Feature_Genes to test** sets the number tested, and **highest-ranked Feature_Genes to plot** controls figures only. **Parallel workers** and **maximum exported globals** control performance. In the lower-left panel, **expression assay/layer** chooses the normalised expression to score (normally `data`, not raw `counts`). **Gene-score combination method** is `sum`, `mean`, or `mean_by_sign`; the signed mean is useful when a signature has unequal positive and negative gene lists. **Per-gene normalisation** can be `robust_minmax`, `minmax`, or none; robust min–max limits the effect of outliers. The definition file contains the pathway name followed by signed/weighted genes. This is where a pathway becomes a transparent linear model rather than an unweighted gene list.*
+*Figure 5. This is the custom-signature screen. **Spatial selection algorithm** chooses Moran's I (favorise spots that touch each other), mark variogram (favorise the comparison nearby spots vs far spots), or both to find genes with non-random spatial structure; **variable Feature_Genes to test** sets the number tested, and **highest-ranked Feature_Genes to plot** controls figures only. **Parallel workers** and **maximum exported globals** control performance. In the lower-left panel, **expression assay/layer** chooses the normalised expression to score (normally `data`, not raw `counts`). **Gene-score combination method** is `sum`, `mean`, or `mean_by_sign`; the signed mean is useful when a signature has unequal positive and negative gene lists. **Per-gene normalisation** can be `robust_minmax`, `minmax`, or none; robust min–max limits the effect of outliers (scored between 0 and 1). The definition file contains the pathway name followed by signed/weighted genes. This is where a pathway becomes a transparent linear model rather than an unweighted gene list.*
 
 ### Figure 6 — Step 6: add cell-type context and compare regions carefully
 
@@ -175,7 +174,3 @@ Results_of_Custom_Pathway_projection/
 ```
 
 Run `00_Install_R_Packages.R` first. The scripts use packages including Seurat, sctransform, progeny, edgeR, DESeq2, limma, SingleR, celldex, and optionally spacexr/RCTD. Step 1 also requires a configured Space Ranger installation.
-
-## Interpretation boundary
-
-Spatial pathway and footprint scores are useful to prioritise regions and hypotheses. They are not a diagnosis of a patient, proof of pathway activation, proof of protein abundance, or proof that one cell type caused the signal. Use independent tissue sections, appropriate biological replicates, pathology review, and orthogonal tests where a clinical or mechanistic conclusion is required.
