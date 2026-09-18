@@ -1,7 +1,0 @@
-#!/usr/bin/env sh
-cd "$(dirname "$0")"
-if command -v gradle >/dev/null 2>&1; then
-  exec gradle "$@"
-fi
-echo "ERROR: Gradle was not found." >&2
-exit 1

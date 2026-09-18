@@ -1,4 +1,0 @@
-local.dashapp.gym.table:style/AppTheme = 0x7f030000
-local.dashapp.gym.table:string/app_name = 0x7f020000
-local.dashapp.gym.table:drawable/custom_launcher_icon = 0x7f010001
-local.dashapp.gym.table:drawable/custom_app_icon = 0x7f010000

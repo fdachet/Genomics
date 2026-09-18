@@ -1,7 +1,0 @@
-#Sat Jun 06 21:06:36 CDT 2026
-base.1=P\:\\Script_Python\\Android\\Dash Table\\V17\\app\\build\\intermediates\\dex\\debug\\mergeProjectDexDebug\\4\\classes.dex
-path.1=4/classes.dex
-base.0=P\:\\Script_Python\\Android\\Dash Table\\V17\\app\\build\\intermediates\\dex\\debug\\mergeProjectDexDebug\\0\\classes.dex
-renamed.1=classes2.dex
-renamed.0=classes.dex
-path.0=0/classes.dex

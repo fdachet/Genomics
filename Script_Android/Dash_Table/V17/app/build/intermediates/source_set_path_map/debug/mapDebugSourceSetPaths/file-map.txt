@@ -1,7 +1,0 @@
-local.weighttable.app-pngs-0 P:\Script_Python\Android\Dash Table\V17\app\build\generated\res\pngs\debug
-local.weighttable.app-resValues-1 P:\Script_Python\Android\Dash Table\V17\app\build\generated\res\resValues\debug
-local.weighttable.app-packageDebugResources-2 P:\Script_Python\Android\Dash Table\V17\app\build\intermediates\incremental\debug\packageDebugResources\merged.dir
-local.weighttable.app-packageDebugResources-3 P:\Script_Python\Android\Dash Table\V17\app\build\intermediates\incremental\debug\packageDebugResources\stripped.dir
-local.weighttable.app-debug-4 P:\Script_Python\Android\Dash Table\V17\app\build\intermediates\merged_res\debug\mergeDebugResources
-local.weighttable.app-debug-5 P:\Script_Python\Android\Dash Table\V17\app\src\debug\res
-local.weighttable.app-main-6 P:\Script_Python\Android\Dash Table\V17\app\src\main\res

@@ -1,6 +1,0 @@
-R_DEF: Internal format may change without notice
-local
-drawable custom_app_icon
-drawable custom_launcher_icon
-string app_name
-style AppTheme
