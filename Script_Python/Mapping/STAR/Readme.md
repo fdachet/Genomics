@@ -122,18 +122,3 @@ For each sample, STAR commonly creates files using the selected sample prefix:
 
 
 
-## Implementation notes
-
-- Input fields are validated before the run: positive thread count, non-negative parallel jobs, required folders, detected/selected samples, and compatible unmapped-only settings.
-- All commands are shown before execution. This makes the workflow more transparent and gives a final chance to stop an incorrect run.
-- The generated shell commands run in a background thread so the GUI and log remain responsive.
-- Progress is updated every ten seconds from completed sample markers; the remaining-time estimate is approximate and becomes better after the first samples finish.
-- The script increases the Linux open-file limit before running STAR, supporting large jobs with many files.
-
-## Files in this folder
-
-```text
-Star_V52.py                         STAR GUI source code
-Screenshot/Mapping_Relaxed.png      Example of the Relaxed alignment interface
-Readme.md                           This documentation
-```
