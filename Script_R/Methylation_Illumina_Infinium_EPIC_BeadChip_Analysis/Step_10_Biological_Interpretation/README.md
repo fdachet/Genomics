@@ -19,4 +19,4 @@ Step 10 is a curation-ready export, not an enrichment-analysis engine. It combin
 
 The primary outputs are `Step10_Gene_Evidence_for_IPA.xlsx`, `Step10_Gene_Evidence_for_IPA.tsv`, and `gene_evidence_export_summary.txt`. The workbook has a **Results** sheet with one gene per row and a **Column_Definitions** sheet explaining the evidence fields.
 
-`Select_for_IPA` starts at `0`. Set it to `1` only for genes you choose after reviewing FDR, effect size, DMP/DMR context, and optional RNA evidence. This version does not run GO or KEGG enrichment; it prepares a transparent evidence table for downstream manual/pathway work.
+`Select_for_IPA` starts at `0`. Set it to `1` only for genes you choose after reviewing FDR, effect size, DMP/DMR context, and optional RNA evidence. This script prepares a table for downstream pathway to be inputed in IPA (InGenuity Pathway Analysis).
