@@ -1,6 +1,6 @@
 # Fabien Dachet
 
-Senior computational biologist specializing in **cancer research, genomics, neurology, and bioinformatics**, with extensive experience in DNA/RNA sequencing, multi-omics analysis, spatial transcriptomics, workflow development, and custom scientific software. I also serve as **Director of Bioinformatics at the UI NeuroRepository**.
+Senior computational biologist specializing in **cancer research, genomics, neurology, and bioinformatics**, with extensive experience in DNA/RNA sequencing, multi-omics analysis, spatial transcriptomics, workflow development, and custom scientific software.
 
 ## Research Interests
 
