@@ -1,4 +1,4 @@
-# Numbered single-cell RNA-seq pipeline
+# single-cell RNA-seq pipeline
 
 ## Scientific purpose
 
