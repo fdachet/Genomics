@@ -31,4 +31,54 @@ This model combines many classification trees fitted with the `ranger` engine. P
 
 When the classification input contains non-empty `KnownClass` values, the external-validation tables compare those classes with the model predictions. They include overall metrics, per-class metrics, a confusion matrix, and a confusion-matrix heatmap.
 
+## Result figures
+
+### `Classification_Confidence_Barplot.png`
+
+![Classification confidence](Classification_Confidence_Barplot.png)
+
+Each bar represents one classification sample. Bar height is the largest class probability assigned by the model, and bar color identifies the predicted class. The clear synthetic samples have tall bars, while the ambiguous samples contain lower maximum probabilities.
+
+### `Classification_Probability_Heatmap.png`
+
+![Classification probabilities](Classification_Probability_Heatmap.png)
+
+Rows represent classification samples and columns represent classes. Each printed number is the probability assigned to that class, and darker cells represent larger probabilities. Clear samples form high-probability class blocks; ambiguous samples divide probability between the two classes used in their synthetic mixture.
+
+### `CrossValidated_Confusion_Matrix_Heatmap.png`
+
+![Cross-validated confusion matrix](CrossValidated_Confusion_Matrix_Heatmap.png)
+
+Rows are known training classes and columns are out-of-fold predicted classes. Cell values are sample counts. Counts on the main diagonal are correct cross-validated predictions, while off-diagonal cells represent class assignments to a different class.
+
+### `CrossValidated_OOF_Probability_Heatmap.png`
+
+![Cross-validated out-of-fold probabilities](CrossValidated_OOF_Probability_Heatmap.png)
+
+Rows are training samples and columns are classes. The cells contain mean out-of-fold probabilities combined across the repeated cross-validation predictions. The dark block associated with each sample's known class shows the probability pattern produced without predicting that sample from a model fitted on the same fold.
+
+### `ExternalValidation_Confusion_Matrix_Heatmap.png`
+
+![External-validation confusion matrix](ExternalValidation_Confusion_Matrix_Heatmap.png)
+
+Rows are the non-empty `KnownClass` values from the classification input and columns are model predictions. Cell values are counts. The displayed synthetic result places the clear labeled test samples on the diagonal.
+
+### `Predicted_Class_Counts.png`
+
+![Predicted class counts](Predicted_Class_Counts.png)
+
+The bars count how many classification samples were assigned to each class by this algorithm. These totals include both the clear and ambiguous synthetic samples.
+
+### `Top_Variable_Importance.png`
+
+![Top variable importance](Top_Variable_Importance.png)
+
+The horizontal bars rank predictors by the variable-importance values calculated from this fitted model. Longer bars represent larger model-derived importance values. The displayed variables are predominantly the synthetic class-marker predictors.
+
+### `Tuning_Performance.png`
+
+![Tuning performance](Tuning_Performance.png)
+
+This plot displays the cross-validation selection metric across the model's candidate tuning values. The parameter values shown in `Best_Tuning_Parameters.tabtxt` correspond to the selected tuning result.
+
 

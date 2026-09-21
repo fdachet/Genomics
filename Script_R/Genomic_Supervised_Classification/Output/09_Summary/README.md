@@ -54,3 +54,33 @@ Green bars contain the percentage of algorithms that voted for the consensus cla
 ![PCA of training and classified samples](Training_and_Classified_Samples_PCA.png)
 
 Training observations are circles and classification observations are triangles. Clear classification samples overlap their corresponding training clusters. Ambiguous samples appear between the class regions whose marker signals were combined during generation.
+
+## `Algorithm_Performance_BalancedAccuracy.png`
+
+![Balanced accuracy by algorithm](Algorithm_Performance_BalancedAccuracy.png)
+
+Each bar shows mean one-vs-all balanced accuracy from the combined out-of-fold predictions for one algorithm. Balanced accuracy combines sensitivity and specificity across classes. All algorithms reach 1.0 in the displayed synthetic run.
+
+## `Algorithm_Performance_MacroF1.png`
+
+![Macro F1 by algorithm](Algorithm_Performance_MacroF1.png)
+
+Each bar shows macro F1 for one algorithm. The script calculates F1 for every class from precision and recall and then averages those class values with equal class weight. All displayed algorithms have macro F1 equal to 1.0.
+
+## `Algorithm_Runtime_Minutes.png`
+
+![Runtime by algorithm](Algorithm_Runtime_Minutes.png)
+
+The bars show elapsed model runtime in minutes. The displayed run records Gradient Boosting as the longest algorithm, followed by Elastic Net and SVM, while the remaining algorithms complete in shorter times.
+
+## `Consensus_ExternalValidation_Confusion_Matrix_Heatmap.png`
+
+![Consensus external-validation confusion matrix](Consensus_ExternalValidation_Confusion_Matrix_Heatmap.png)
+
+Rows represent non-empty `KnownClass` values and columns represent consensus predictions. Cell values are sample counts. The clear synthetic validation samples appear on the main diagonal because their consensus predictions match their generated classes.
+
+## `Consensus_Mean_Probability_Heatmap.png`
+
+![Consensus mean probability heatmap](Consensus_Mean_Probability_Heatmap.png)
+
+Rows represent classification samples and columns represent classes. Each cell is the mean probability assigned to that class across algorithms that produced probability output. Clear samples form high-probability blocks for Classes A, B, and C. Ambiguous samples distribute mean probability across the two classes represented in their mixed marker signal.
