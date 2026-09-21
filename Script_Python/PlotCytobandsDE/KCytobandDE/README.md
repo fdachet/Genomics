@@ -114,7 +114,7 @@ Two scaling approaches are available:
 
 The color-baseline choice also sets the scaling scope for segment intensity: **GENOME** uses all qualifying segments; **CHROM** uses the qualifying segments in the current chromosome; **None** behaves as genome-wide for this purpose. Scaling uses robust 5th–95th percentile bounds to reduce domination by extreme FC values.
 
-The zoomed example below shows how the setting makes a DESeq2-derived gene effect easier to read locally.
+The zoomed example below shows how the setting makes a DESeq2-derived gene effect easier to read locally. Form Deseq2 analysis, Gene TRAJ39 located in chromosome 14 q11.2 , with a fold change of +1.7 , a FDR od 2.68%  a TPM of 30.3  and correlated to immune response at 84%
 
 ![Zoomed gene-level FC intensity](Screenshots/Gene_Intensity_ON_zoomed.png)
 
