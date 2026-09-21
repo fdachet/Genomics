@@ -1,0 +1,10 @@
+Item	Value
+Training samples	150
+Samples to classify	44
+Original predictor columns	86
+Retained predictor columns	86
+Removed predictor columns	0
+Number of classes	3
+Cross-validation folds	5
+Cross-validation repeats	3
+Extra classification columns ignored	None

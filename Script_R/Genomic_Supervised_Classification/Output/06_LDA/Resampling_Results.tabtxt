@@ -1,0 +1,16 @@
+Accuracy	Kappa	MeanBalancedAccuracy	MacroF1	parameter	Resample
+1	1	1	1	none	Fold1.Rep1
+1	1	1	1	none	Fold2.Rep1
+1	1	1	1	none	Fold3.Rep1
+1	1	1	1	none	Fold4.Rep1
+1	1	1	1	none	Fold5.Rep1
+1	1	1	1	none	Fold1.Rep2
+1	1	1	1	none	Fold2.Rep2
+1	1	1	1	none	Fold3.Rep2
+1	1	1	1	none	Fold4.Rep2
+1	1	1	1	none	Fold5.Rep2
+1	1	1	1	none	Fold1.Rep3
+1	1	1	1	none	Fold2.Rep3
+1	1	1	1	none	Fold3.Rep3
+1	1	1	1	none	Fold4.Rep3
+1	1	1	1	none	Fold5.Rep3

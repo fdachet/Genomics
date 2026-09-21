@@ -1,0 +1,26 @@
+[2026-09-21 15:10:23] Checking required R packages. 
+[2026-09-21 15:10:24] Required R packages are available. 
+[2026-09-21 15:10:24] Pipeline started. 
+[2026-09-21 15:10:24] Training file: P:\Github\Script_R\Genomic_Supervised_Classification\Input\Input_Trainer.tabtxt 
+[2026-09-21 15:10:24] Classification file: P:\Github\Script_R\Genomic_Supervised_Classification\Input\Input_ToClassify.tabtxt 
+[2026-09-21 15:10:24] Output directory: P:\Github\Script_R\Genomic_Supervised_Classification\Output\Run_20260921_151023 
+[2026-09-21 15:10:24] Input validation completed: 150 training samples, 44 samples to classify, 86 retained features, and 3 classes. 
+[2026-09-21 15:10:24] Parallel backend registered with 22 workers. 
+[2026-09-21 15:10:24] Starting: Elastic-net logistic/multinomial regression 
+[2026-09-21 15:10:29] Completed: Elastic-net logistic/multinomial regression in 0.071 minutes. 
+[2026-09-21 15:10:29] Starting: Random forest 
+[2026-09-21 15:10:30] Completed: Random forest in 0.029 minutes. 
+[2026-09-21 15:10:31] Starting: Support vector machine with radial kernel 
+[2026-09-21 15:10:34] Completed: Support vector machine with radial kernel in 0.065 minutes. 
+[2026-09-21 15:10:34] Starting: Gradient boosting with native XGBoost 
+[2026-09-21 15:11:41] Completed: Gradient boosting with native XGBoost in 1.108 minutes. 
+[2026-09-21 15:11:41] Starting: Partial least-squares discriminant analysis 
+[2026-09-21 15:11:43] Completed: Partial least-squares discriminant analysis in 0.030 minutes. 
+[2026-09-21 15:11:43] Starting: Linear discriminant analysis with PCA preprocessing 
+[2026-09-21 15:11:44] Completed: Linear discriminant analysis with PCA preprocessing in 0.023 minutes. 
+[2026-09-21 15:11:44] Starting: k-nearest neighbors 
+[2026-09-21 15:11:46] Completed: k-nearest neighbors in 0.037 minutes. 
+[2026-09-21 15:11:46] Starting: Nearest shrunken centroid 
+[2026-09-21 15:11:48] Completed: Nearest shrunken centroid in 0.025 minutes. 
+[2026-09-21 15:11:49] Pipeline completed successfully. 
+[2026-09-21 15:11:49] Main combined result: P:\Github\Script_R\Genomic_Supervised_Classification\Output\Run_20260921_151023\09_Summary\All_Algorithms_Classification_Summary.tabtxt 

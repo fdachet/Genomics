@@ -1,0 +1,26 @@
+Synthetic supervised-classification validation dataset
+
+Training samples: 150
+Samples to classify: 44
+Classes: Class_A, Class_B, Class_C
+Predictor features: 86
+
+Known signal:
+Class_A: A_marker_001, A_marker_002, A_marker_003, A_marker_004, A_marker_005 ... are intentionally high in Class_A and low in the other classes.
+Class_B: B_marker_001, B_marker_002, B_marker_003, B_marker_004, B_marker_005 ... are intentionally high in Class_B and low in the other classes.
+Class_C: C_marker_001, C_marker_002, C_marker_003, C_marker_004, C_marker_005 ... are intentionally high in Class_C and low in the other classes.
+
+Expected results:
+Clear KnownClass samples should usually be classified correctly by most or all successful algorithms.
+Cross-validated performance should be high because the class-specific signal is deliberately strong.
+Class-specific marker features should rank above most Noise_* features in variable-importance results.
+Ambiguous_* samples are deliberate mixtures of adjacent classes and should tend to have reduced probability margin, reduced algorithm agreement, or model disagreement.
+The KnownClass field is blank for ambiguous samples so they are excluded from external-validation accuracy.
+
+Embedded-signal check from the generated training matrix:
+Class_A: own-marker mean=7.945, outside-class mean=1.998, difference=5.947
+Class_B: own-marker mean=8.017, outside-class mean=2.027, difference=5.990
+Class_C: own-marker mean=8.005, outside-class mean=2.039, difference=5.966
+Overall noise-feature mean=5.009
+
+This dataset is synthetic and is intended for software validation and demonstration, not clinical validation.

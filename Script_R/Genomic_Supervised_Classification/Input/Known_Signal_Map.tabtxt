@@ -1,0 +1,87 @@
+Feature	ExpectedClass	Signal
+A_marker_001	Class_A	High in expected class and low in all other classes
+A_marker_002	Class_A	High in expected class and low in all other classes
+A_marker_003	Class_A	High in expected class and low in all other classes
+A_marker_004	Class_A	High in expected class and low in all other classes
+A_marker_005	Class_A	High in expected class and low in all other classes
+A_marker_006	Class_A	High in expected class and low in all other classes
+A_marker_007	Class_A	High in expected class and low in all other classes
+A_marker_008	Class_A	High in expected class and low in all other classes
+A_marker_009	Class_A	High in expected class and low in all other classes
+A_marker_010	Class_A	High in expected class and low in all other classes
+A_marker_011	Class_A	High in expected class and low in all other classes
+A_marker_012	Class_A	High in expected class and low in all other classes
+B_marker_001	Class_B	High in expected class and low in all other classes
+B_marker_002	Class_B	High in expected class and low in all other classes
+B_marker_003	Class_B	High in expected class and low in all other classes
+B_marker_004	Class_B	High in expected class and low in all other classes
+B_marker_005	Class_B	High in expected class and low in all other classes
+B_marker_006	Class_B	High in expected class and low in all other classes
+B_marker_007	Class_B	High in expected class and low in all other classes
+B_marker_008	Class_B	High in expected class and low in all other classes
+B_marker_009	Class_B	High in expected class and low in all other classes
+B_marker_010	Class_B	High in expected class and low in all other classes
+B_marker_011	Class_B	High in expected class and low in all other classes
+B_marker_012	Class_B	High in expected class and low in all other classes
+C_marker_001	Class_C	High in expected class and low in all other classes
+C_marker_002	Class_C	High in expected class and low in all other classes
+C_marker_003	Class_C	High in expected class and low in all other classes
+C_marker_004	Class_C	High in expected class and low in all other classes
+C_marker_005	Class_C	High in expected class and low in all other classes
+C_marker_006	Class_C	High in expected class and low in all other classes
+C_marker_007	Class_C	High in expected class and low in all other classes
+C_marker_008	Class_C	High in expected class and low in all other classes
+C_marker_009	Class_C	High in expected class and low in all other classes
+C_marker_010	Class_C	High in expected class and low in all other classes
+C_marker_011	Class_C	High in expected class and low in all other classes
+C_marker_012	Class_C	High in expected class and low in all other classes
+Noise_001	None	Noise feature with no intended class association
+Noise_002	None	Noise feature with no intended class association
+Noise_003	None	Noise feature with no intended class association
+Noise_004	None	Noise feature with no intended class association
+Noise_005	None	Noise feature with no intended class association
+Noise_006	None	Noise feature with no intended class association
+Noise_007	None	Noise feature with no intended class association
+Noise_008	None	Noise feature with no intended class association
+Noise_009	None	Noise feature with no intended class association
+Noise_010	None	Noise feature with no intended class association
+Noise_011	None	Noise feature with no intended class association
+Noise_012	None	Noise feature with no intended class association
+Noise_013	None	Noise feature with no intended class association
+Noise_014	None	Noise feature with no intended class association
+Noise_015	None	Noise feature with no intended class association
+Noise_016	None	Noise feature with no intended class association
+Noise_017	None	Noise feature with no intended class association
+Noise_018	None	Noise feature with no intended class association
+Noise_019	None	Noise feature with no intended class association
+Noise_020	None	Noise feature with no intended class association
+Noise_021	None	Noise feature with no intended class association
+Noise_022	None	Noise feature with no intended class association
+Noise_023	None	Noise feature with no intended class association
+Noise_024	None	Noise feature with no intended class association
+Noise_025	None	Noise feature with no intended class association
+Noise_026	None	Noise feature with no intended class association
+Noise_027	None	Noise feature with no intended class association
+Noise_028	None	Noise feature with no intended class association
+Noise_029	None	Noise feature with no intended class association
+Noise_030	None	Noise feature with no intended class association
+Noise_031	None	Noise feature with no intended class association
+Noise_032	None	Noise feature with no intended class association
+Noise_033	None	Noise feature with no intended class association
+Noise_034	None	Noise feature with no intended class association
+Noise_035	None	Noise feature with no intended class association
+Noise_036	None	Noise feature with no intended class association
+Noise_037	None	Noise feature with no intended class association
+Noise_038	None	Noise feature with no intended class association
+Noise_039	None	Noise feature with no intended class association
+Noise_040	None	Noise feature with no intended class association
+Noise_041	None	Noise feature with no intended class association
+Noise_042	None	Noise feature with no intended class association
+Noise_043	None	Noise feature with no intended class association
+Noise_044	None	Noise feature with no intended class association
+Noise_045	None	Noise feature with no intended class association
+Noise_046	None	Noise feature with no intended class association
+Noise_047	None	Noise feature with no intended class association
+Noise_048	None	Noise feature with no intended class association
+Noise_049	None	Noise feature with no intended class association
+Noise_050	None	Noise feature with no intended class association

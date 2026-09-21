@@ -1,0 +1,16 @@
+Item	Value
+Random seed	12345.0
+Classes	3.0
+Training samples	150.0
+Known test samples	36.0
+Ambiguous test samples	8.0
+Marker features per class	12.0
+Total marker features	36.0
+Noise features	50.0
+Total predictor features	86.0
+Requested missing fraction	0.01
+High marker mean	8.0
+Low marker mean	2.0
+Marker SD	0.9
+Noise mean	5.0
+Noise SD	1.5

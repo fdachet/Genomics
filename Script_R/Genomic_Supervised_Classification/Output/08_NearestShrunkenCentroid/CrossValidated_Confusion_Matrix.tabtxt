@@ -1,0 +1,4 @@
+TruthClass	Predicted_Class_A	Predicted_Class_B	Predicted_Class_C
+Class_A	50	0	0
+Class_B	0	50	0
+Class_C	0	0	50

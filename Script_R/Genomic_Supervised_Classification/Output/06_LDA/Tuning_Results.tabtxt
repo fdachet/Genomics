@@ -1,0 +1,2 @@
+parameter	Accuracy	Kappa	MeanBalancedAccuracy	MacroF1	AccuracySD	KappaSD	MeanBalancedAccuracySD	MacroF1SD
+none	1	1	1	1	0	0	0	0

@@ -1,0 +1,26 @@
+Partial Least Squares 
+
+150 samples
+ 86 predictor
+  3 classes: 'Class_A', 'Class_B', 'Class_C' 
+
+Pre-processing: median imputation (86), centered (86), scaled (86) 
+Resampling: Cross-Validated (5 fold, repeated 3 times) 
+Summary of sample sizes: 120, 120, 120, 120, 120, 120, ... 
+Resampling results across tuning parameters:
+
+  ncomp  Accuracy   Kappa  MeanBalancedAccuracy  MacroF1  
+   1     0.6666667  0.5    0.75                  0.5502061
+   2     1.0000000  1.0    1.00                  1.0000000
+   3     1.0000000  1.0    1.00                  1.0000000
+   4     1.0000000  1.0    1.00                  1.0000000
+   5     1.0000000  1.0    1.00                  1.0000000
+   6     1.0000000  1.0    1.00                  1.0000000
+   7     1.0000000  1.0    1.00                  1.0000000
+   8     1.0000000  1.0    1.00                  1.0000000
+   9     1.0000000  1.0    1.00                  1.0000000
+  10     1.0000000  1.0    1.00                  1.0000000
+
+MeanBalancedAccuracy was used to select the optimal model using the
+ largest value.
+The final value used for the model was ncomp = 2.

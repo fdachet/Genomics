@@ -1,0 +1,15 @@
+Linear Discriminant Analysis 
+
+150 samples
+ 86 predictor
+  3 classes: 'Class_A', 'Class_B', 'Class_C' 
+
+Pre-processing: median imputation (86), centered (86), scaled (86),
+ principal component signal extraction (86) 
+Resampling: Cross-Validated (5 fold, repeated 3 times) 
+Summary of sample sizes: 120, 120, 120, 120, 120, 120, ... 
+Resampling results:
+
+  Accuracy  Kappa  MeanBalancedAccuracy  MacroF1
+  1         1      1                     1      
+

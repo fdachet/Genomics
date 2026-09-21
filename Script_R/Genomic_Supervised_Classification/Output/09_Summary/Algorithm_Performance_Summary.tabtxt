@@ -1,0 +1,9 @@
+AlgorithmKey	Algorithm	Status	CrossValidatedAccuracy	CrossValidatedKappa	CrossValidatedMacroF1	CrossValidatedBalancedAccuracy	BestTuningParameters	RuntimeMinutes	ErrorMessage
+ElasticNet	Elastic-net logistic/multinomial regression	SUCCESS	1	1	1	1	alpha=0; lambda=10	0.0711666305859884	
+RandomForest	Random forest	SUCCESS	1	1	1	1	mtry=9; splitrule=1; min.node.size=1	0.0292641321818034	
+SVM	Support vector machine with radial kernel	SUCCESS	1	1	1	1	sigma=0.0070159705059478; C=0.25	0.064575469493866	
+GradientBoosting	Gradient boosting with native XGBoost	SUCCESS	1	1	1	1	nrounds=100; max_depth=2; eta=0.05; gamma=0; colsample_bytree=0.75; min_child_weight=1; subsample=0.8	1.10818139712016	
+PLSDA	Partial least-squares discriminant analysis	SUCCESS	1	1	1	1	ncomp=2	0.0299945513407389	
+LDA	Linear discriminant analysis with PCA preprocessing	SUCCESS	1	1	1	1	parameter=none	0.022845717271169	
+kNN	k-nearest neighbors	SUCCESS	1	1	1	1	k=21	0.036506450176239	
+NearestShrunkenCentroid	Nearest shrunken centroid	SUCCESS	1	1	1	1	threshold=0.396570887403038	0.0247165322303772	

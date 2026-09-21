@@ -1,0 +1,2 @@
+mtry	splitrule	min.node.size
+9	gini	1

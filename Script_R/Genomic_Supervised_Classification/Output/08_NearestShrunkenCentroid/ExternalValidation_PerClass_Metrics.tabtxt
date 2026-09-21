@@ -1,0 +1,4 @@
+InternalClass	Class	TP	TN	FP	FN	Sensitivity_Recall	Specificity	Precision	F1	BalancedAccuracy
+Class_A	Class_A	12	24	0	0	1	1	1	1	1
+Class_B	Class_B	12	24	0	0	1	1	1	1	1
+Class_C	Class_C	12	24	0	0	1	1	1	1	1

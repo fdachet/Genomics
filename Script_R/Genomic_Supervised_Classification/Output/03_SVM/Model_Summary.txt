@@ -1,0 +1,24 @@
+Support Vector Machines with Radial Basis Function Kernel 
+
+150 samples
+ 86 predictor
+  3 classes: 'Class_A', 'Class_B', 'Class_C' 
+
+Pre-processing: median imputation (86), centered (86), scaled (86) 
+Resampling: Cross-Validated (5 fold, repeated 3 times) 
+Summary of sample sizes: 120, 120, 120, 120, 120, 120, ... 
+Resampling results across tuning parameters:
+
+  C      Accuracy  Kappa  MeanBalancedAccuracy  MacroF1
+   0.25  1         1      1                     1      
+   0.50  1         1      1                     1      
+   1.00  1         1      1                     1      
+   2.00  1         1      1                     1      
+   4.00  1         1      1                     1      
+   8.00  1         1      1                     1      
+  16.00  1         1      1                     1      
+
+Tuning parameter 'sigma' was held constant at a value of 0.007015971
+MeanBalancedAccuracy was used to select the optimal model using the
+ largest value.
+The final values used for the model were sigma = 0.007015971 and C = 0.25.

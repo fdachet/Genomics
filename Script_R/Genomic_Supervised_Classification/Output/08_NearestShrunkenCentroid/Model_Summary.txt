@@ -1,0 +1,31 @@
+Nearest Shrunken Centroids 
+
+150 samples
+ 86 predictor
+  3 classes: 'Class_A', 'Class_B', 'Class_C' 
+
+Pre-processing: median imputation (86) 
+Resampling: Cross-Validated (5 fold, repeated 3 times) 
+Summary of sample sizes: 120, 120, 120, 120, 120, 120, ... 
+Resampling results across tuning parameters:
+
+  threshold   Accuracy  Kappa  MeanBalancedAccuracy  MacroF1
+   0.3965709  1         1      1                     1      
+   1.1613862  1         1      1                     1      
+   1.9262015  1         1      1                     1      
+   2.6910167  1         1      1                     1      
+   3.4558320  1         1      1                     1      
+   4.2206473  1         1      1                     1      
+   4.9854626  1         1      1                     1      
+   5.7502779  1         1      1                     1      
+   6.5150932  1         1      1                     1      
+   7.2799084  1         1      1                     1      
+   8.0447237  1         1      1                     1      
+   8.8095390  1         1      1                     1      
+   9.5743543  1         1      1                     1      
+  10.3391696  1         1      1                     1      
+  11.1039848  1         1      1                     1      
+
+MeanBalancedAccuracy was used to select the optimal model using the
+ largest value.
+The final value used for the model was threshold = 0.3965709.

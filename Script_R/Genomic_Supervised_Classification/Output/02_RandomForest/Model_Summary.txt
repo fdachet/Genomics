@@ -1,0 +1,24 @@
+Random Forest 
+
+150 samples
+ 86 predictor
+  3 classes: 'Class_A', 'Class_B', 'Class_C' 
+
+Pre-processing: median imputation (86) 
+Resampling: Cross-Validated (5 fold, repeated 3 times) 
+Summary of sample sizes: 120, 120, 120, 120, 120, 120, ... 
+Resampling results across tuning parameters:
+
+  mtry  min.node.size  Accuracy  Kappa  MeanBalancedAccuracy  MacroF1
+   9     1             1         1      1                     1      
+   9     5             1         1      1                     1      
+   9    10             1         1      1                     1      
+  29     1             1         1      1                     1      
+  29     5             1         1      1                     1      
+  29    10             1         1      1                     1      
+
+Tuning parameter 'splitrule' was held constant at a value of gini
+MeanBalancedAccuracy was used to select the optimal model using the
+ largest value.
+The final values used for the model were mtry = 9, splitrule = gini
+ and min.node.size = 1.

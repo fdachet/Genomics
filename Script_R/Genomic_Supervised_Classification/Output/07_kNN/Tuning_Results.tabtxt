@@ -1,0 +1,12 @@
+k	Accuracy	Kappa	MeanBalancedAccuracy	MacroF1	AccuracySD	KappaSD	MeanBalancedAccuracySD	MacroF1SD
+1	1	1	1	1	0	0	0	0
+3	1	1	1	1	0	0	0	0
+5	1	1	1	1	0	0	0	0
+7	1	1	1	1	0	0	0	0
+9	1	1	1	1	0	0	0	0
+11	1	1	1	1	0	0	0	0
+13	1	1	1	1	0	0	0	0
+15	1	1	1	1	0	0	0	0
+17	1	1	1	1	0	0	0	0
+19	1	1	1	1	0	0	0	0
+21	1	1	1	1	0	0	0	0
