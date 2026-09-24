@@ -6,20 +6,13 @@ This directory contains a seven-step single-cell RNA-seq pipeline for Chromium/1
 
 ```mermaid
 flowchart TD
-    A[Paired 10x FASTQ files] --> B[Step 1: STARsolo alignment and UMI counting]
-    B --> C[Filtered gene-by-barcode matrices]
-    C --> D[Step 2: Seurat import and cell QC]
-    D --> E[QC-filtered Seurat object]
-    E --> F[Step 3: scDblFinder doublet detection]
-    F --> G[Singlet-only Seurat object]
-    G --> H[Step 4: SCTransform or LogNormalize]
-    H --> I[Normalized Seurat object]
-    I --> J[Step 5: PCA, neighbor graph, clustering, and UMAP]
-    J --> K[Clustered Seurat object]
-    K --> L[Step 6: optional Harmony, reclustering, markers, and annotation]
-    L --> M[Annotated Seurat object]
-    M --> N[Step 7: sample-aware pseudobulk edgeR]
-    N --> O[Cell-type differential-expression results]
+    A[Step 1: STARsolo alignment and UMI counting]
+    A --> B[Step 2: Seurat import and cell QC]
+    B --> C[Step 3: scDblFinder doublet detection]
+    C --> D[Step 4: SCTransform or LogNormalize]
+    D --> E[Step 5: PCA, neighbor graph, clustering, and UMAP]
+    E --> F[Step 6: optional Harmony, reclustering, markers, and annotation]
+    F --> G[Step 7: sample-aware pseudobulk edgeR]
 ```
 
 ## Directory layout
