@@ -34,12 +34,12 @@ flowchart TD
 | Stage | Script |
 |---|---|
 | Package setup | `00_Install_R_Packages_COMPLETE_scRNAseq.R` |
-| Step 1 | `Starsolo_Rscript(3).R` |
-| Step 2 | `Seurat_QC_Rscript(4).R` |
-| Step 3 | `Doublet_Detection(2).R` |
-| Step 4 | `Normalization_Rscript(2).R` |
-| Step 5 | **PCA-producing script required, but no Step-5 script was provided with the files used to construct this README** |
-| Step 6 | `Integration_Annotation(1).R` |
+| Step 1 | `Starsolo_Rscript.R` |
+| Step 2 | `Seurat_QC_Rscript.R` |
+| Step 3 | `Doublet_Detection.R` |
+| Step 4 | `Normalization_Rscript.R` |
+| Step 5 | `Starsolo_Rscript.R` |
+| Step 6 | `Integration_Annotation.R` |
 | Step 7 | `Pseudobulk_DE_Rscript_CORRECTED.R` |
 
 Step 6 explicitly requires an existing Seurat reduction named `pca`; therefore a PCA stage must occur between normalization and Step 6 even though its script is not documented here.
@@ -486,7 +486,7 @@ pca
 
 and explicitly stops if the input RDS does not contain it.
 
-A Step-5 PCA script was **not included among the files available when this README was generated**, so its exact parameters and output filenames are intentionally not invented here.
+ so its exact parameters and output filenames are intentionally not invented here.
 
 Scientifically, this stage should be inspected before Step 6 because the selected principal components determine the representation used for:
 

@@ -9,8 +9,7 @@ Matrix products: default
   LAPACK version 3.12.1
 
 locale:
-[1] LC_COLLATE=English_United States.utf8  LC_CTYPE=English_United States.utf8   
-[3] LC_MONETARY=English_United States.utf8 LC_NUMERIC=C                          
+[1] LC_COLLATE=English_United States.utf8  LC_CTYPE=English_United States.utf8    LC_MONETARY=English_United States.utf8 LC_NUMERIC=C                          
 [5] LC_TIME=English_United States.utf8    
 
 time zone: America/Chicago
