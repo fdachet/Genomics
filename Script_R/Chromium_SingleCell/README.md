@@ -14,10 +14,8 @@ The design is deliberately modular: each stage reads from its local `Input/` dir
 ```mermaid
 flowchart TD
     A[FASTQ files] --> B[Step 1: STARsolo]
-    B --> C[Filtered 10x-style count matrices]
-    C --> D[Step 2: Seurat object + cell QC]
-    D --> E[QC-filtered Seurat object]
-    E --> F[Step 3: scDblFinder]
+    B --> D[Step 2: Seurat object + cell QC]
+    D --> F[Step 3: scDblFinder]
     F --> G[Singlet-only Seurat object]
     G --> H[Step 4: Normalization]
     H --> I[Normalized Seurat object]
