@@ -16,13 +16,10 @@ flowchart TD
     A[FASTQ files] --> B[Step 1: STARsolo]
     B --> D[Step 2: Seurat object + cell QC]
     D --> F[Step 3: scDblFinder]
-    F --> G[Singlet-only Seurat object]
-    G --> H[Step 4: Normalization]
-    H --> I[Normalized Seurat object]
-    I --> J[Step 5: PCA + graph clustering + UMAP]
+    F --> H[Step 4: Normalization]
+    H --> J[Step 5: PCA + graph clustering + UMAP]
     J --> K[Step 6: optional Harmony + reclustering + markers + annotation]
-    K --> L[Annotated Seurat object]
-    L --> M[Step 7: sample-aware pseudobulk edgeR]
+    K --> M[Step 7: sample-aware pseudobulk edgeR]
     M --> N[Cell-type-specific differential-expression results]
 ```
 
