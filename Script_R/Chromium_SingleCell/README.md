@@ -62,7 +62,7 @@ The script writes `R_package_installation_verification.csv` and stops if a requi
 
 ### Quality-control role
 
-This is an **environment QC** step rather than biological QC. It verifies that all requested namespaces can be loaded and records their versions. A reproducible analysis should retain this table together with `sessionInfo()` from each analytical step.
+This is an initial step for **environment QC** rather than the other steps that are for biological QC. It verifies that all requested namespaces can be loaded and records their versions. A reproducible analysis should retain this table together with `sessionInfo()` from each analytical step.
 
 ---
 
@@ -127,20 +127,12 @@ STARsolo is called with **R2 first** (cDNA/transcript read) and **R1 second** (c
 |---|---:|---|
 | `STAR_EXECUTABLE` | `/usr/local/bin/STAR` | Linux/WSL path to the STAR executable. |
 | `WSL_DISTRIBUTION` | `Debian` | WSL distribution used when the R script is executed from Windows. |
-| `THREADS` | `12` | Number of STAR computational threads. Affects runtime, not the biological definition of cells. |
-| `CHEMISTRY` | `10x_3p_v3` | Defines cell-barcode and UMI positions. `10x_3p_v3` = 16-bp barcode + 12-bp UMI; `10x_3p_v2` = 16-bp barcode + 10-bp UMI. A wrong chemistry setting can corrupt barcode/UMI interpretation. |
-| `CREATE_BAM` | `FALSE` | If `TRUE`, also writes an unsorted BAM. This can require substantial disk space. |
+| `THREADS` | `12` | Number of STAR computational threads. |
+| `CHEMISTRY` | `10x_3p_v3` | Defines cell-barcode and UMI positions. `10x_3p_v3` = 16-bp barcode + 12-bp UMI; `10x_3p_v2` = 16-bp barcode + 10-bp UMI. |
+| `CREATE_BAM` | `FALSE` | If `TRUE`, also writes an unsorted BAM. |
 | `CELL_FILTER_METHOD` | `EmptyDrops_CR` | STARsolo cell-calling mode used by `--soloCellFilter`. |
 
-Additional STARsolo settings in the script include:
 
-```text
---soloCBmatchWLtype 1MM_multi_Nbase_pseudocounts
---soloUMIfiltering MultiGeneUMI_CR
---soloUMIdedup 1MM_CR
---clipAdapterType CellRanger4
---outFilterScoreMin 30
---soloFeatures Gene GeneFull Velocyto
 ```
 
 ## Main outputs
@@ -164,7 +156,7 @@ run_log.txt
 sessionInfo.txt
 ```
 
-The script stops if required STARsolo output files are absent.
+
 
 ## QC enabled by this step
 
@@ -177,9 +169,9 @@ This stage provides several *technical integrity controls*:
 5. **Expected-output validation** — the run is rejected if core STARsolo matrix files are missing.
 6. **STARsolo summary review** — `Summary.csv` should be inspected before downstream analysis.
 
-### Synthetic example of a STARsolo summary
+### Example of a STARsolo summary
 
-The exact STARsolo `Summary.csv` fields depend on STAR/STARsolo output conventions. A plausible *illustrative* summary might look like:
+
 
 | Metric | Synthetic value |
 |---|---:|
@@ -191,11 +183,8 @@ The exact STARsolo `Summary.csv` fields depend on STAR/STARsolo output conventio
 | Median UMI per cell | 5,840 |
 | Median genes per cell | 2,190 |
 
-These values are **not expected thresholds**; they only show the type of run-level information one should inspect.
 
-### Visual output
 
-This script does **not** currently generate a dedicated QC plot. Its principal outputs are matrices, STARsolo summaries, and manifests. For an auditable production workflow, FASTQ-level QC such as FastQC/MultiQC would normally be reviewed separately; that functionality is not present in this script.
 
 ---
 
