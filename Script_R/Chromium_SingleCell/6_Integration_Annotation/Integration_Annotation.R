@@ -117,7 +117,7 @@ require_packages <- function(packages) {
     if (length(missing)) {
         stop(
             "Missing required R package(s): ", paste(missing, collapse = ", "),
-            "\nRun the top-level 00_Install_R_Packages.R script first."
+            "\nRun 00_Install/00_Install_R_Packages_scRNAseq.R first."
         )
     }
 }

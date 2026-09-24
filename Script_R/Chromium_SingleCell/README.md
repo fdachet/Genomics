@@ -22,8 +22,8 @@ flowchart TD
     F --> G[Singlet-only Seurat object]
     G --> H[Step 4: Normalization]
     H --> I[Normalized Seurat object]
-    I --> J[Step 5: PCA / dimensional reduction]
-    J --> K[Step 6: optional Harmony + graph clustering + UMAP + markers + annotation]
+    I --> J[Step 5: PCA + graph clustering + UMAP]
+    J --> K[Step 6: optional Harmony + reclustering + markers + annotation]
     K --> L[Annotated Seurat object]
     L --> M[Step 7: sample-aware pseudobulk edgeR]
     M --> N[Cell-type-specific differential-expression results]
@@ -33,16 +33,16 @@ flowchart TD
 
 | Stage | Script |
 |---|---|
-| Package setup | `00_Install_R_Packages_COMPLETE_scRNAseq.R` |
+| Package setup | `00_Install/00_Install_R_Packages_scRNAseq.R` |
 | Step 1 | `Starsolo_Rscript.R` |
 | Step 2 | `Seurat_QC_Rscript.R` |
 | Step 3 | `Doublet_Detection.R` |
 | Step 4 | `Normalization_Rscript.R` |
-| Step 5 | `Starsolo_Rscript.R` |
+| Step 5 | `Clustering_Rscript.R` |
 | Step 6 | `Integration_Annotation.R` |
-| Step 7 | `Pseudobulk_DE_Rscript_CORRECTED.R` |
+| Step 7 | `Pseudobulk_DE.R` |
 
-Step 6 explicitly requires an existing Seurat reduction named `pca`; therefore a PCA stage must occur between normalization and Step 6 even though its script is not documented here.
+Step 5 creates the PCA reduction, initial graph clusters, and initial UMAP. Step 6 reads that clustered object, optionally creates a Harmony reduction, recalculates neighbors/clusters/UMAP, finds markers, and assigns cell-type labels.
 
 ---
 
@@ -51,7 +51,7 @@ Step 6 explicitly requires an existing Seurat reduction named `pca`; therefore a
 Run:
 
 ```bash
-Rscript 00_Install_R_Packages_COMPLETE_scRNAseq.R
+Rscript 00_Install/00_Install_R_Packages_scRNAseq.R
 ```
 
 The installer includes the R ecosystem needed for the current workflow: Seurat/SeuratObject, `sctransform`, `glmGamPoi`, `scDblFinder`, `SingleCellExperiment`, `SummarizedExperiment`, `harmony`, `presto`, `SingleR`, `celldex`, `BiocParallel`, `edgeR`, and supporting packages.
@@ -111,7 +111,7 @@ The exact values in these columns propagate into the Seurat object and can later
 
 # 1. STARsolo alignment and UMI counting
 
-**Script:** `Starsolo_Rscript(3).R`
+**Script:** `1_StarSolo/Starsolo_Rscript.R`
 
 ## Purpose
 
@@ -207,7 +207,7 @@ This script does **not** currently generate a dedicated QC plot. Its principal o
 
 # 2. Seurat import and cell-level QC
 
-**Script:** `Seurat_QC_Rscript(4).R`
+**Script:** `2_Seurat/Seurat_QC_Rscript.R`
 
 ## Purpose
 
@@ -304,11 +304,11 @@ Sample04,6250,5600,650
 
 Expected visual style:
 
-![Synthetic example QC violin](docs/example_qc_violin_before.png)
+The corresponding script output is `2_Seurat/Output/QC_violin_plots_before_filtering.pdf`.
 
 The actual script's violin PDF contains multiple QC metrics, while the image above shows one representative metric.
 
-![Synthetic example QC scatter](docs/example_qc_scatter.png)
+The corresponding script output is `2_Seurat/Output/QC_scatter_plots_before_filtering.pdf`.
 
 In the real output, the horizontal mitochondrial cutoff is determined by `MAX_PERCENT_MT`.
 
@@ -316,7 +316,7 @@ In the real output, the horizontal mitochondrial cutoff is determined by `MAX_PE
 
 # 3. Doublet detection
 
-**Script:** `Doublet_Detection(2).R`
+**Script:** `3_Doublet_Detection/Doublet_Detection.R`
 
 ## Purpose
 
@@ -368,7 +368,7 @@ Sample03,doublet,315
 
 Expected visual style:
 
-![Synthetic example scDblFinder scores](docs/example_doublet_scores.png)
+The corresponding script output is `3_Doublet_Detection/Output/scDblFinder_score_distribution.png`.
 
 The real script facets the histogram by sample.
 
@@ -376,7 +376,7 @@ The real script facets the histogram by sample.
 
 # 4. Normalization and highly variable genes
 
-**Script:** `Normalization_Rscript(2).R`
+**Script:** `4_Normalization/Normalization_Rscript.R`
 
 ## Purpose
 
@@ -472,36 +472,58 @@ SCTransform,SCT,3000,percent.mt,TRUE,4,5000
 
 Expected visual style:
 
-![Synthetic example variable features](docs/example_variable_features.png)
+The corresponding script output is `4_Normalization/Output/variable_features.png`.
 
 ---
 
-# 5. PCA / dimensional reduction
+# 5. PCA, graph clustering, and UMAP
 
-Step 6 requires a Seurat reduction named:
+**Script:** `5_Clustering/Clustering_Rscript.R`
+
+## Purpose
+
+Step 5 reads exactly one normalized Seurat RDS from `5_Clustering/Input`. It selects the `SCT` assay when present and otherwise uses `RNA`. For an RNA object without a `scale.data` layer, the script runs `ScaleData` before dimensional reduction.
+
+The stage then performs:
 
 ```text
-pca
+RunPCA
+FindNeighbors
+FindClusters
+RunUMAP
 ```
 
-and explicitly stops if the input RDS does not contain it.
+using the PCA reduction. The PCA created here is the reduction required by Step 6.
 
- so its exact parameters and output filenames are intentionally not invented here.
+## Parameters
 
-Scientifically, this stage should be inspected before Step 6 because the selected principal components determine the representation used for:
+| Parameter | Default | Meaning |
+|---|---:|---|
+| `NUMBER_PCS` | `50` | Number of principal components requested from `RunPCA`. |
+| `DIMS_TO_USE` | `1:30` | Available PCA dimensions used for neighbors, clustering, and UMAP. |
+| `CLUSTER_RESOLUTION` | `0.5` | Resolution passed to `FindClusters`. |
+| `RANDOM_SEED` | `12345` | Seed supplied to clustering and UMAP. |
 
-- Harmony, if enabled;
-- nearest-neighbor graph construction;
-- clustering;
-- UMAP.
+## Outputs
 
-Step 6 currently requests PCs `1:30`, but only dimensions that actually exist are used. A PCA elbow plot is an appropriate diagnostic for deciding whether 30 components are justified, but the exact Step-5 implementation must be documented from the actual PCA script.
+```text
+seurat_clustered.rds
+UMAP_by_cluster.png/.pdf
+UMAP_by_sample.png/.pdf            # when sample_id is present
+PCA_elbow_plot.pdf
+cluster_counts_by_sample.csv
+clustering_parameters.csv
+run_log.txt
+sessionInfo.txt
+```
+
+`seurat_clustered.rds` contains the PCA, nearest-neighbor graph, initial Seurat clusters, and UMAP generated by this step. The Step 6 input description correctly identifies this file as its upstream object.
 
 ---
 
-# 6. Optional Harmony integration, clustering, markers, and annotation
+# 6. Optional Harmony integration, reclustering, markers, and annotation
 
-**Script:** `Integration_Annotation(1).R`
+**Script:** `6_Integration_Annotation/Integration_Annotation.R`
 
 ## Purpose
 
@@ -659,11 +681,11 @@ This stage adds several strong analytical controls:
 
 ### Synthetic example: UMAP by cluster
 
-![Synthetic example UMAP clusters](docs/example_umap_clusters.png)
+The corresponding script output is `6_Integration_Annotation/Output/UMAP_by_Seurat_clusters.png`.
 
 ### Synthetic example: same embedding colored by condition
 
-![Synthetic example UMAP condition](docs/example_umap_condition.png)
+The corresponding script output is `6_Integration_Annotation/Output/UMAP_by_condition.png` when `condition` is present in the metadata.
 
 These two figures illustrate an important QC concept: **the coordinates are the same; only the metadata used for coloring changes**. A strong sample- or batch-specific partition can indicate technical structure. A condition-specific pattern may be biological, confounded, or both, so it must be interpreted in the context of the experimental design.
 
@@ -671,7 +693,7 @@ These two figures illustrate an important QC concept: **the coordinates are the 
 
 # 7. Sample-aware pseudobulk differential expression
 
-**Script:** `Pseudobulk_DE_Rscript_CORRECTED.R`
+**Script:** `7_Pseudobulk_DE/Pseudobulk_DE.R`
 
 ## Purpose
 
@@ -799,7 +821,7 @@ All values above are synthetic.
 
 Expected volcano-plot style:
 
-![Synthetic example pseudobulk volcano](docs/example_volcano.png)
+Step 7 writes one `Volcano_<cell_type>.png` file for each analyzed cell type.
 
 The vertical dashed lines correspond to the absolute fold-change threshold and the horizontal dashed line corresponds to the FDR threshold.
 
@@ -816,7 +838,7 @@ The principal advantage of the stepped design is that QC is not concentrated in 
 | Cell QC | genes/cell, UMI/cell, mitochondrial %, ribosomal % | pre/post QC tables, violin/scatter PDFs |
 | Doublet QC | doublet score and per-sample doublet calls | score histogram, summary table |
 | Normalization QC | variable-feature selection, model/regression settings | variable-feature plot, normalization summary |
-| Dimensional QC | PCA must exist before Step 6 | PCA reduction; Step-5 details depend on the missing PCA script |
+| Dimensional and initial cluster QC | Step 5 creates PCA, graph clusters, and UMAP | PCA elbow plot, cluster/sample UMAPs, cluster counts, clustering parameters |
 | Integration QC | batch metadata and simple batch-condition confounding check | integration summary, metadata-colored UMAPs |
 | Cluster QC | cluster resolution, cluster sizes, marker specificity | cluster UMAP, cluster-count table, marker table |
 | Annotation QC | annotation IDs must match current clusters | annotation template/predictions, annotated UMAP |
@@ -868,7 +890,7 @@ Check:
 
 ## After Step 5
 
-Review PCA structure and choose a defensible number of principal components. Step 6 currently requests the first 30.
+Review the PCA elbow plot, initial cluster UMAP, sample-colored UMAP, cluster sizes, and the dimensions recorded in `clustering_parameters.csv`. Step 6 receives `seurat_clustered.rds` and currently requests the first 30 available PCA dimensions.
 
 ## After Step 6
 
@@ -902,40 +924,41 @@ Confirm:
 ```text
 scRNAseq/
 │
-├── 00_Install_R_Packages_COMPLETE_scRNAseq.R
+├── 00_Install/
+│   └── 00_Install_R_Packages_scRNAseq.R
 │
-├── 1_STARsolo/
-│   ├── Starsolo_Rscript(3).R
+├── 1_StarSolo/
+│   ├── Starsolo_Rscript.R
 │   ├── Input/
 │   └── Output/
 │
 ├── 2_Seurat/
-│   ├── Seurat_QC_Rscript(4).R
+│   ├── Seurat_QC_Rscript.R
 │   ├── Input/
 │   └── Output/
 │
 ├── 3_Doublet_Detection/
-│   ├── Doublet_Detection(2).R
+│   ├── Doublet_Detection.R
 │   ├── Input/
 │   └── Output/
 │
 ├── 4_Normalization/
-│   ├── Normalization_Rscript(2).R
+│   ├── Normalization_Rscript.R
 │   ├── Input/
 │   └── Output/
 │
-├── 5_PCA/
-│   ├── <PCA script not provided here>
+├── 5_Clustering/
+│   ├── Clustering_Rscript.R
 │   ├── Input/
 │   └── Output/
 │
 ├── 6_Integration_Annotation/
-│   ├── Integration_Annotation(1).R
+│   ├── Integration_Annotation.R
 │   ├── Input/
 │   └── Output/
 │
 └── 7_Pseudobulk_DE/
-    ├── Pseudobulk_DE_Rscript_CORRECTED.R
+    ├── Pseudobulk_DE.R
     ├── Input/
     └── Output/
 ```
@@ -949,7 +972,7 @@ The output RDS from one stage should be copied or linked into the next stage's `
 The scripts can be run from RStudio or from the command line, for example:
 
 ```bash
-Rscript Seurat_QC_Rscript(4).R
+Rscript 2_Seurat/Seurat_QC_Rscript.R
 ```
 
 Several scripts also contain a Windows-specific `setwd("C:\\scRNAseq\\...")` near the beginning. If the repository is installed elsewhere, edit or remove that line before execution; otherwise R can fail before the script-relative path logic is reached.
@@ -998,13 +1021,15 @@ All figures below are generated from random synthetic data and exist only to sho
 
 | Pipeline stage | Example |
 |---|---|
-| Step 2 QC | [QC violin](docs/example_qc_violin_before.png) |
-| Step 2 QC | [QC scatter](docs/example_qc_scatter.png) |
-| Step 3 doublets | [scDblFinder scores](docs/example_doublet_scores.png) |
-| Step 4 normalization | [variable features](docs/example_variable_features.png) |
-| Step 6 clustering | [UMAP clusters](docs/example_umap_clusters.png) |
-| Step 6 metadata QC | [UMAP condition](docs/example_umap_condition.png) |
-| Step 7 pseudobulk DE | [volcano plot](docs/example_volcano.png) |
+| Step 2 QC | `2_Seurat/Output/QC_violin_plots_before_filtering.pdf` |
+| Step 2 QC | `2_Seurat/Output/QC_scatter_plots_before_filtering.pdf` |
+| Step 3 doublets | `3_Doublet_Detection/Output/scDblFinder_score_distribution.png` |
+| Step 4 normalization | `4_Normalization/Output/variable_features.png` |
+| Step 5 clustering | `5_Clustering/Output/UMAP_by_cluster.png` |
+| Step 5 sample view | `5_Clustering/Output/UMAP_by_sample.png` |
+| Step 6 reclustering | `6_Integration_Annotation/Output/UMAP_by_Seurat_clusters.png` |
+| Step 6 metadata view | `6_Integration_Annotation/Output/UMAP_by_condition.png` |
+| Step 7 pseudobulk DE | `7_Pseudobulk_DE/Output/Volcano_<cell_type>.png` |
 
 ---
 
