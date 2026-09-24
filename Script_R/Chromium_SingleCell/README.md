@@ -1,242 +1,168 @@
-# single-cell RNA-seq pipeline
+# Chromium single-cell RNA-seq pipeline
 
-## Scientific purpose
+This directory contains a seven-step single-cell RNA-seq pipeline for Chromium/10x data. The workflow begins with paired FASTQ files, creates gene-by-cell count matrices, constructs and filters a Seurat object, identifies doublets, normalizes expression values, calculates PCA and clusters, assigns cell types, and performs cell-type-specific pseudobulk differential expression.
 
-This repository implements a **stepwise single-cell RNA-seq (scRNA-seq) workflow** that separates alignment/count generation, Seurat object construction, cell-level quality control, doublet detection, normalization, clustering/annotation, and sample-aware pseudobulk differential-expression analysis into independent stages.
-
-The design is deliberately modular: each stage reads from its local `Input/` directory and writes its products to `Output/`. This makes the analysis auditable because the output of each stage can be inspected before it is accepted as the input of the next stage.
-
-
----
-
-## Pipeline overview
+## Pipeline map
 
 ```mermaid
 flowchart TD
-    A[FASTQ files] --> B[Step 1: STARsolo]
-    B --> D[Step 2: Seurat object + cell QC]
-    D --> F[Step 3: scDblFinder]
-    F --> H[Step 4: Normalization]
-    H --> J[Step 5: PCA + graph clustering + UMAP]
-    J --> K[Step 6: optional Harmony + reclustering + markers + annotation]
-    K --> M[Step 7: sample-aware pseudobulk edgeR]
-    M --> N[Cell-type-specific differential-expression results]
+    A[Paired 10x FASTQ files] --> B[Step 1: STARsolo alignment and UMI counting]
+    B --> C[Filtered gene-by-barcode matrices]
+    C --> D[Step 2: Seurat import and cell QC]
+    D --> E[QC-filtered Seurat object]
+    E --> F[Step 3: scDblFinder doublet detection]
+    F --> G[Singlet-only Seurat object]
+    G --> H[Step 4: SCTransform or LogNormalize]
+    H --> I[Normalized Seurat object]
+    I --> J[Step 5: PCA, neighbor graph, clustering, and UMAP]
+    J --> K[Clustered Seurat object]
+    K --> L[Step 6: optional Harmony, reclustering, markers, and annotation]
+    L --> M[Annotated Seurat object]
+    M --> N[Step 7: sample-aware pseudobulk edgeR]
+    N --> O[Cell-type differential-expression results]
 ```
 
-### Files covered by this README
+## Directory layout
 
-| Stage | Script |
-|---|---|
-| Package setup | `00_Install/00_Install_R_Packages_scRNAseq.R` |
-| Step 1 | `Starsolo_Rscript.R` |
-| Step 2 | `Seurat_QC_Rscript.R` |
-| Step 3 | `Doublet_Detection.R` |
-| Step 4 | `Normalization_Rscript.R` |
-| Step 5 | `Clustering_Rscript.R` |
-| Step 6 | `Integration_Annotation.R` |
-| Step 7 | `Pseudobulk_DE.R` |
+| Stage | Directory | Script |
+| --- | --- | --- |
+| Package installation | `00_Install` | `00_Install_R_Packages_scRNAseq.R` |
+| Step 1 | `1_StarSolo` | `Starsolo_Rscript.R` |
+| Step 2 | `2_Seurat` | `Seurat_QC_Rscript.R` |
+| Step 3 | `3_Doublet_Detection` | `Doublet_Detection.R` |
+| Step 4 | `4_Normalization` | `Normalization_Rscript.R` |
+| Step 5 | `5_Clustering` | `Clustering_Rscript.R` |
+| Step 6 | `6_Integration_Annotation` | `Integration_Annotation.R` |
+| Step 7 | `7_Pseudobulk_DE` | `Pseudobulk_DE.R` |
 
-Step 5 creates the PCA reduction, initial graph clusters, and initial UMAP. Step 6 reads that clustered object, optionally creates a Harmony reduction, recalculates neighbors/clusters/UMAP, finds markers, and assigns cell-type labels.
+Each analytical stage uses an `Input` directory beside its script and writes results to an `Output` directory beside the script. The scripts record messages in `run_log.txt` and save the R environment in `sessionInfo.txt`.
+
+## Data passed between stages
+
+| From | Main output | Used by |
+| --- | --- | --- |
+| Step 1 | `<sample>_Solo.out/Gene/filtered/` | Step 2 matrix import |
+| Step 2 | `seurat_QC_filtered.rds` | Step 3 doublet detection |
+| Step 3 | `seurat_singlets.rds` | Step 4 normalization |
+| Step 4 | `seurat_normalized_SCT.rds` or `seurat_normalized_LogNormalize.rds` | Step 5 clustering |
+| Step 5 | `seurat_clustered.rds` | Step 6 integration and annotation |
+| Step 6 | `seurat_integrated_annotated.rds` | Step 7 pseudobulk analysis |
 
 ---
 
-# 0. R package installation
+# Package installation
 
-Run:
+**Script:** `00_Install/00_Install_R_Packages_scRNAseq.R`
 
-```bash
-Rscript 00_Install/00_Install_R_Packages_scRNAseq.R
-```
+The package script configures CRAN, Satija Lab R-universe, and bnprks R-universe repositories. It installs the CRAN/R-universe and Bioconductor packages referenced by the analytical scripts and writes a package/version table.
 
-The installer includes the R ecosystem needed for the current workflow: Seurat/SeuratObject, `sctransform`, `glmGamPoi`, `scDblFinder`, `SingleCellExperiment`, `SummarizedExperiment`, `harmony`, `presto`, `SingleR`, `celldex`, `BiocParallel`, `edgeR`, and supporting packages.
+## Settings
 
-### Installer parameters
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `INSTALL_OPTIONAL_BPCELLS` | `FALSE` | Adds BPCells to the CRAN package list. |
+| `INSTALL_OPTIONAL_SPATIAL_RCTD` | `FALSE` | Adds installation of `spacexr` from GitHub. |
+| `UPDATE_ALREADY_INSTALLED_PACKAGES` | `FALSE` | Controls whether installed packages are included in installation requests. |
 
-| Parameter | Default | Meaning |
-|---|---:|---|
-| `INSTALL_OPTIONAL_BPCELLS` | `FALSE` | If `TRUE`, also attempts to install BPCells. It is not required by the core scripts documented here. |
-| `INSTALL_OPTIONAL_SPATIAL_RCTD` | `FALSE` | If `TRUE`, installs `spacexr` from GitHub for optional spatial RCTD workflows. |
-| `UPDATE_ALREADY_INSTALLED_PACKAGES` | `FALSE` | If `FALSE`, only missing packages are installed. |
+## Package groups
 
-The script writes `R_package_installation_verification.csv` and stops if a required package remains unavailable.
+The CRAN/R-universe group includes Seurat, SeuratObject, Matrix, sctransform, ggplot2, patchwork, data.table, dplyr, future, future.apply, harmony, uwot, RcppAnnoy, irlba, igraph, presto, remotes, jsonlite, R.utils, and rstudioapi.
 
-### Quality-control role
+The Bioconductor group includes SingleCellExperiment, SummarizedExperiment, S4Vectors, MatrixGenerics, DelayedArray, scDblFinder, scuttle, scran, glmGamPoi, edgeR, DESeq2, limma, SingleR, celldex, BiocParallel, ExperimentHub, and AnnotationHub.
 
-This is an initial step for **environment QC** rather than the other steps that are for biological QC. It verifies that all requested namespaces can be loaded and records their versions. A reproducible analysis should retain this table together with `sessionInfo()` from each analytical step.
+## Output
 
----
-
-# Input metadata
-
-Step 2 optionally reads either:
-
-- `Input/sample_metadata.csv`, or
-- `Input/sample_metadata.tabtxt`
-
-with `sample_metadata.csv` taking priority when both are present.
-
-At minimum the metadata file must contain:
-
-```text
-sample_id
-```
-
-Typical additional columns are:
-
-```text
-condition
-batch
-patient
-sex
-region
-```
-
-Example:
-
-```csv
-sample_id,condition,batch,patient
-Sample01,Control,B1,P01
-Sample02,Treatment,B1,P02
-```
-
-The exact values in these columns propagate into the Seurat object and can later be used for Harmony correction, UMAP coloring, sample-aware design matrices, or pseudobulk contrasts.
+`R_package_installation_verification.csv` contains the package category, package name, installation status, and installed version.
 
 ---
 
-# 1. STARsolo alignment and UMI counting
+# Step 1 — STARsolo alignment and UMI counting
 
 **Script:** `1_StarSolo/Starsolo_Rscript.R`
 
-## Purpose
+Step 1 converts paired 10x FASTQ files into sparse gene-by-cell-barcode matrices with STARsolo.
 
-This stage converts paired 10x-style FASTQ data into sparse gene-by-barcode UMI count matrices. Under native Windows R, the script executes STAR through a selected WSL distribution and converts Windows paths to Linux/WSL paths automatically.
+## Inputs
 
-The script automatically detects:
+The script searches recursively under `1_StarSolo/Input` for:
 
-- gzipped R1 FASTQ files;
-- their corresponding R2 files;
-- exactly one STAR genome index containing `Genome`, `SA`, and `SAindex`;
-- exactly one barcode whitelist;
-- multiple sequencing lanes belonging to the same inferred sample.
+- paired `R1` and `R2` files ending in `.fastq.gz`;
+- one STAR genome-index directory containing `Genome`, `SA`, and `SAindex`;
+- one barcode whitelist whose filename contains `whitelist` or `barcodes` and ends in `.txt` or `.txt.gz`.
 
-STARsolo is called with **R2 first** (cDNA/transcript read) and **R1 second** (cell-barcode/UMI read).
+The sample identifier is derived from the R1 filename. FASTQ pairs from multiple lanes with the same derived sample identifier are grouped into one STARsolo call.
 
-## Main parameters
+## Settings
 
-| Parameter | Default | Scientific / computational meaning |
-|---|---:|---|
-| `STAR_EXECUTABLE` | `/usr/local/bin/STAR` | Linux/WSL path to the STAR executable. |
-| `WSL_DISTRIBUTION` | `Debian` | WSL distribution used when the R script is executed from Windows. |
-| `THREADS` | `12` | Number of STAR computational threads. |
-| `CHEMISTRY` | `10x_3p_v3` | Defines cell-barcode and UMI positions. `10x_3p_v3` = 16-bp barcode + 12-bp UMI; `10x_3p_v2` = 16-bp barcode + 10-bp UMI. |
-| `CREATE_BAM` | `FALSE` | If `TRUE`, also writes an unsorted BAM. |
-| `CELL_FILTER_METHOD` | `EmptyDrops_CR` | STARsolo cell-calling mode used by `--soloCellFilter`. |
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `STAR_EXECUTABLE` | `/usr/local/bin/STAR` | Linux path to STAR. |
+| `WSL_DISTRIBUTION` | `Debian` | WSL distribution used by native Windows R. |
+| `THREADS` | `12` | STAR thread count. |
+| `CHEMISTRY` | `10x_3p_v3` | Barcode and UMI coordinate preset. |
+| `CREATE_BAM` | `FALSE` | Controls unsorted BAM creation. |
+| `CELL_FILTER_METHOD` | `EmptyDrops_CR` | STARsolo cell-calling method. |
 
+`10x_3p_v3` uses a 16-base cell barcode and 12-base UMI. `10x_3p_v2` uses a 16-base cell barcode and 10-base UMI.
 
-```
+## Processing
 
-## Main outputs
+STAR receives R2 as the cDNA read and R1 as the barcode/UMI read. The command uses `CB_UMI_Simple`, the selected barcode and UMI coordinates, whitelist matching with `1MM_multi_Nbase_pseudocounts`, Cell Ranger-style UMI processing, `EmptyDrops_CR` cell filtering, Cell Ranger 4 adapter clipping, and the `Gene`, `GeneFull`, and `Velocyto` feature modes.
 
-For each sample, the script expects:
+On Windows, paths are converted with `wslpath` and STAR runs through the selected WSL distribution. On Linux, the command runs through `bash`.
 
-```text
-<SAMPLE>_Solo.out/Gene/filtered/matrix.mtx
-<SAMPLE>_Solo.out/Gene/filtered/barcodes.tsv
-<SAMPLE>_Solo.out/Gene/filtered/features.tsv
-<SAMPLE>_Solo.out/Gene/raw/matrix.mtx
-<SAMPLE>_Solo.out/Gene/Summary.csv
-```
+## Outputs
 
-It also writes:
+For each sample, STARsolo creates:
 
 ```text
-detected_FASTQ_manifest.csv
-STARsolo_output_manifest.csv
-run_log.txt
-sessionInfo.txt
+Output/<sample>/<sample>_Solo.out/Gene/filtered/matrix.mtx
+Output/<sample>/<sample>_Solo.out/Gene/filtered/barcodes.tsv
+Output/<sample>/<sample>_Solo.out/Gene/filtered/features.tsv
+Output/<sample>/<sample>_Solo.out/Gene/raw/matrix.mtx
+Output/<sample>/<sample>_Solo.out/Gene/Summary.csv
 ```
 
-
-
-## QC enabled by this step
-
-This stage provides several *technical integrity controls*:
-
-1. **R1/R2 pairing check** — every R1 must resolve to exactly one R2.
-2. **Genome-index validation** — exactly one valid STAR index must be found.
-3. **Whitelist validation** — exactly one barcode whitelist must be identified.
-4. **Chemistry consistency** — the selected chemistry determines barcode/UMI coordinates.
-5. **Expected-output validation** — the run is rejected if core STARsolo matrix files are missing.
-6. **STARsolo summary review** — `Summary.csv` should be inspected before downstream analysis.
-
-### Example of a STARsolo summary
-
-
-
-| Metric | Synthetic value |
-|---|---:|
-| Number of Reads | 84,200,000 |
-| Reads with valid barcodes | 96.1% |
-| Reads mapped to genome | 91.7% |
-| Reads mapped to unique genes | 72.8% |
-| Estimated cells | 6,420 |
-| Median UMI per cell | 5,840 |
-| Median genes per cell | 2,190 |
-
-
-
+`detected_FASTQ_manifest.csv` records the detected pairs. `STARsolo_output_manifest.csv` records the filtered matrix directory, raw matrix directory, and summary file for every sample.
 
 ---
 
-# 2. Seurat import and cell-level QC
+# Step 2 — Seurat import and cell QC
 
 **Script:** `2_Seurat/Seurat_QC_Rscript.R`
 
-## Purpose
+Step 2 locates 10x-style sparse matrices, creates one Seurat object per sample, merges the objects, calculates cell-level metrics, and applies the configured cell filters.
 
-This stage locates filtered STARsolo or Cell Ranger-style matrix directories, constructs one Seurat object per sample, merges samples, calculates QC metrics, applies cell filters, and records both pre-filter and post-filter states.
+## Matrix layouts
 
-Recognized matrix layouts include:
-
-```text
-Solo.out/Gene/filtered/
-filtered_feature_bc_matrix/
-```
-
-with:
+The matrix-directory scan recognizes STARsolo and Cell Ranger-style locations containing:
 
 ```text
-matrix.mtx[.gz]
-barcodes.tsv[.gz]
-features.tsv[.gz] or genes.tsv[.gz]
+matrix.mtx or matrix.mtx.gz
+barcodes.tsv or barcodes.tsv.gz
+features.tsv, features.tsv.gz, genes.tsv, or genes.tsv.gz
 ```
 
-## Parameters
+The matrix manifest records the detected directory and sample identifier.
 
-| Parameter | Default | Interpretation |
-|---|---:|---|
-| `MIN_FEATURES` | `200` | Minimum genes/features detected per cell. Very low values often indicate empty/low-complexity droplets. |
-| `MAX_FEATURES` | `7500` | Maximum detected genes per cell. Extremely high values can reflect doublets/multiplets or unusually complex cells. |
-| `MIN_COUNTS` | `500` | Minimum total UMI count per cell. |
-| `MAX_COUNTS` | `Inf` | No upper UMI cutoff is applied by default. |
-| `MAX_PERCENT_MT` | `20` | Cells with mitochondrial percentage above 20% are removed. |
-| `MIN_CELLS_PER_GENE` | `3` | A gene must be detected in at least three cells to be retained when the Seurat object is created. |
-| `MITOCHONDRIAL_PATTERN` | `^MT-` | Human mitochondrial gene-name pattern used to calculate `percent.mt`. |
-| `RIBOSOMAL_PATTERN` | `^RP[SL]` | Human ribosomal protein gene-name pattern used to calculate `percent.ribo`. |
+## Sample metadata
 
-`percent.ribo` is measured and visualized but is **not used as a filtering criterion** in this script.
+Metadata can be read from `sample_metadata.csv` or `sample_metadata.tabtxt`. The `sample_id` column connects metadata rows with the imported sample objects. Additional columns such as condition, batch, patient, sex, or region become cell-level Seurat metadata.
 
-## Cell filter
+## Settings and cell filter
 
-A cell is retained when:
+| Setting | Default |
+| --- | ---: |
+| `MIN_FEATURES` | `200` |
+| `MAX_FEATURES` | `7500` |
+| `MIN_COUNTS` | `500` |
+| `MAX_COUNTS` | `Inf` |
+| `MAX_PERCENT_MT` | `20` |
+| `MIN_CELLS_PER_GENE` | `3` |
+| `MITOCHONDRIAL_PATTERN` | `^MT-` |
+| `RIBOSOMAL_PATTERN` | `^RP[SL]` |
 
-```text
-nFeature_RNA >= MIN_FEATURES
-nFeature_RNA <= MAX_FEATURES
-nCount_RNA   >= MIN_COUNTS
-nCount_RNA   <= MAX_COUNTS
-percent.mt   <= MAX_PERCENT_MT
-```
+The filter retains cells satisfying all feature, count, and mitochondrial-percentage boundaries. Ribosomal percentage is calculated and stored with the other metrics.
 
 ## Outputs
 
@@ -251,67 +177,31 @@ cell_counts_by_sample.csv
 QC_violin_plots_after_filtering.pdf
 seurat_QC_filtered.rds
 QC_parameters.csv
-run_log.txt
-sessionInfo.txt
 ```
 
-## QC enabled by this step
+## Example visual results
 
-This is the principal **cell-quality gate**.
+`QC_violin_plots_before_filtering.pdf` and `QC_violin_plots_after_filtering.pdf` display the distributions of `nFeature_RNA`, `nCount_RNA`, `percent.mt`, and `percent.ribo` for each sample. The before/after figures show how the cell distributions change when the filter is applied.
 
-The before/after tables make filtering quantitatively auditable. The violin plots display:
-
-- `nFeature_RNA`
-- `nCount_RNA`
-- `percent.mt`
-- `percent.ribo`
-
-grouped by sample.
-
-The scatter plots display:
-
-- `nCount_RNA` versus `percent.mt`
-- `nCount_RNA` versus `nFeature_RNA`
-
-A scientifically important point is that fixed thresholds should not be accepted blindly. The distributions should be inspected per sample because tissue type, dissociation protocol, sequencing depth, and expected cell biology can legitimately change these metrics.
-
-### Synthetic example
-
-```csv
-sample_id,cells_before_QC,cells_after_QC,cells_removed
-Sample01,6420,5710,710
-Sample02,5980,5335,645
-Sample03,7010,6175,835
-Sample04,6250,5600,650
-```
-
-Expected visual style:
-
-The corresponding script output is `2_Seurat/Output/QC_violin_plots_before_filtering.pdf`.
-
-The actual script's violin PDF contains multiple QC metrics, while the image above shows one representative metric.
-
-The corresponding script output is `2_Seurat/Output/QC_scatter_plots_before_filtering.pdf`.
-
-In the real output, the horizontal mitochondrial cutoff is determined by `MAX_PERCENT_MT`.
+`QC_scatter_plots_before_filtering.pdf` contains `nCount_RNA` versus `percent.mt` and `nCount_RNA` versus `nFeature_RNA`. Each point represents one cell.
 
 ---
 
-# 3. Doublet detection
+# Step 3 — Doublet detection
 
 **Script:** `3_Doublet_Detection/Doublet_Detection.R`
 
-## Purpose
+Step 3 reads one QC-filtered Seurat object, joins split RNA count layers when present, converts the RNA assay to a SingleCellExperiment, and applies `scDblFinder`.
 
-This stage identifies probable doublets/multiplets with `scDblFinder`. For Seurat v5 objects it first joins split RNA count layers when necessary, converts the RNA assay to a `SingleCellExperiment`, verifies that a raw `counts` assay exists, and runs `scDblFinder` **with the sample identifier supplied to the algorithm**.
+## Settings
 
-## Parameters
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `SAMPLE_COLUMN` | `sample_id` | Metadata column passed to `scDblFinder` as the sample identifier. |
+| `EXPECTED_DOUBLET_RATE` | `NULL` | Uses the scDblFinder rate calculation; a numeric value supplies an explicit rate. |
+| `RANDOM_SEED` | `12345` | Random seed. |
 
-| Parameter | Default | Interpretation |
-|---|---:|---|
-| `SAMPLE_COLUMN` | `sample_id` | Metadata field used to distinguish samples during doublet detection. |
-| `EXPECTED_DOUBLET_RATE` | `NULL` | `NULL` allows `scDblFinder` to estimate an appropriate doublet rate. A numeric value overrides that behavior. |
-| `RANDOM_SEED` | `12345` | Reproducibility seed. |
+The scDblFinder score and class are copied back into the Seurat metadata. A second Seurat object is created from cells classified as singlets.
 
 ## Outputs
 
@@ -322,87 +212,40 @@ doublet_scores_and_calls.csv
 doublet_summary_by_sample.csv
 scDblFinder_score_distribution.png
 scDblFinder_score_distribution.pdf
-run_log.txt
-sessionInfo.txt
 ```
 
-`seurat_singlets.rds` is the natural input to the normalization step.
+## Example visual result
 
-## QC enabled by this step
-
-The stage provides two complementary checks:
-
-1. `doublet_summary_by_sample.csv` — checks whether one sample has a markedly different doublet burden.
-2. `scDblFinder_score_distribution.*` — visualizes score distributions and calls.
-
-A high or sample-specific doublet fraction should trigger review of cell loading, capture yield, chemistry, and upstream sample-specific QC.
-
-### Synthetic example
-
-```csv
-sample_id,scDblFinder_class,Freq
-Sample01,singlet,5450
-Sample01,doublet,260
-Sample02,singlet,5095
-Sample02,doublet,240
-Sample03,singlet,5860
-Sample03,doublet,315
-```
-
-Expected visual style:
-
-The corresponding script output is `3_Doublet_Detection/Output/scDblFinder_score_distribution.png`.
-
-The real script facets the histogram by sample.
+`scDblFinder_score_distribution.png` displays score histograms separated by sample and colored by the singlet/doublet classification. The horizontal axis is the scDblFinder score and the vertical axis is the number of cells.
 
 ---
 
-# 4. Normalization and highly variable genes
+# Step 4 — Normalization and variable features
 
 **Script:** `4_Normalization/Normalization_Rscript.R`
 
-## Purpose
+Step 4 reads the singlet Seurat object and applies either SCTransform or the LogNormalize workflow.
 
-This stage supports two normalization strategies:
+## Settings
 
-```text
-SCTransform
-LogNormalize
-```
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `NUMBER_WORKERS` | `4` | Future multisession worker count. |
+| `FUTURE_MAX_SIZE_GB` | `40` | Future global-size setting. |
+| `NORMALIZATION_METHOD` | `SCTransform` | Selects `SCTransform` or `LogNormalize`. |
+| `NUMBER_VARIABLE_FEATURES` | `3000` | Number of variable features requested. |
+| `VARIABLES_TO_REGRESS` | `percent.mt` | Metadata fields passed to normalization regression when present. |
+| `RANDOM_SEED` | `12345` | Random seed. |
+| `SCT_MODEL_CELLS` | `5000` | Maximum cells used to fit the SCTransform model. |
+| `SCT_RETURN_ONLY_VARIABLE_GENES` | `TRUE` | Controls the feature set returned by SCTransform. |
 
-The default is `SCTransform` with `vst.flavor = "v2"` and `glmGamPoi` available for faster fitting.
+## SCTransform branch
 
-## Parameters
+The SCTransform branch calls `SCTransform` with `vst.flavor = "v2"`, the configured variable-feature count, model-cell count, and available regression variables. The resulting SCT assay becomes the default assay.
 
-| Parameter | Default | Interpretation |
-|---|---:|---|
-| `NUMBER_WORKERS` | `4` | Number of Windows `future::multisession` workers. This is a performance setting, not a biological parameter. |
-| `FUTURE_MAX_SIZE_GB` | `40` | Maximum allowed size of globals exported to a future operation. It is not a reservation of 40 GB of RAM. |
-| `NORMALIZATION_METHOD` | `SCTransform` | Selects SCTransform or conventional LogNormalize workflow. |
-| `NUMBER_VARIABLE_FEATURES` | `3000` | Target number of highly variable genes/features. |
-| `VARIABLES_TO_REGRESS` | `percent.mt` | Metadata variables regressed during normalization when present. |
-| `RANDOM_SEED` | `12345` | Reproducibility seed. |
-| `SCT_MODEL_CELLS` | `5000` | Maximum number of cells used to fit the SCTransform model. |
-| `SCT_RETURN_ONLY_VARIABLE_GENES` | `TRUE` | Restricts stored SCT residuals to variable genes, reducing memory use. |
+## LogNormalize branch
 
-### SCTransform branch
-
-The script creates a new `SCT` assay using:
-
-```text
-vst.flavor = v2
-ncells = min(SCT_MODEL_CELLS, total cells)
-variable.features.n = NUMBER_VARIABLE_FEATURES
-vars.to.regress = valid requested regressors
-```
-
-### LogNormalize branch
-
-The alternative branch performs:
-
-1. `NormalizeData(..., scale.factor = 10000)`
-2. `FindVariableFeatures(..., selection.method = "vst")`
-3. `ScaleData(...)`
+The LogNormalize branch applies `NormalizeData`, identifies variable features with `FindVariableFeatures`, and scales the selected features with `ScaleData`. The RNA assay remains the default assay.
 
 ## Outputs
 
@@ -416,225 +259,125 @@ or:
 seurat_normalized_LogNormalize.rds
 ```
 
-plus:
+together with:
 
 ```text
 highly_variable_genes.csv
 variable_features.png
 variable_features.pdf
 normalization_summary.csv
-run_log.txt
-sessionInfo.txt
 ```
 
-## QC enabled by this step
+## Example visual result
 
-The variable-feature plot provides a direct check that a limited set of genes exhibits higher-than-background biological variability and is selected for dimensional reduction.
-
-The summary records:
-
-- normalization method;
-- default assay;
-- number of variable genes;
-- regressors actually used;
-- whether `glmGamPoi` was available;
-- number of workers;
-- number of model cells;
-- elapsed time.
-
-### Scientific caution: regression
-
-`percent.mt` is regressed by default. This can be useful when mitochondrial fraction primarily represents technical stress, but mitochondrial biology can also be condition- or cell-type-associated. Regression should therefore be justified for the experiment rather than treated as an automatic requirement.
-
-### Synthetic example
-
-```csv
-normalization_method,default_assay,number_variable_features,variables_regressed,glmGamPoi_installed,workers_used,SCT_model_cells
-SCTransform,SCT,3000,percent.mt,TRUE,4,5000
-```
-
-Expected visual style:
-
-The corresponding script output is `4_Normalization/Output/variable_features.png`.
+`variable_features.png` plots standardized variance against average expression. Variable genes are highlighted, and the most variable genes are labeled. The figure represents the feature set carried into dimensional reduction.
 
 ---
 
-# 5. PCA, graph clustering, and UMAP
+# Step 5 — PCA, graph clustering, and UMAP
 
 **Script:** `5_Clustering/Clustering_Rscript.R`
 
-## Purpose
+Step 5 reads one normalized Seurat object. It uses the SCT assay when present and otherwise uses RNA. An RNA assay without scaled data is scaled before PCA.
 
-Step 5 reads exactly one normalized Seurat RDS from `5_Clustering/Input`. It selects the `SCT` assay when present and otherwise uses `RNA`. For an RNA object without a `scale.data` layer, the script runs `ScaleData` before dimensional reduction.
+## Settings
 
-The stage then performs:
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `NUMBER_PCS` | `50` | Number of principal components requested. |
+| `DIMS_TO_USE` | `1:30` | PCA dimensions used by neighbors, clusters, and UMAP. |
+| `CLUSTER_RESOLUTION` | `0.5` | Graph-clustering resolution. |
+| `RANDOM_SEED` | `12345` | Seed used by clustering and UMAP. |
 
-```text
-RunPCA
-FindNeighbors
-FindClusters
-RunUMAP
-```
+## Processing
 
-using the PCA reduction. The PCA created here is the reduction required by Step 6.
-
-## Parameters
-
-| Parameter | Default | Meaning |
-|---|---:|---|
-| `NUMBER_PCS` | `50` | Number of principal components requested from `RunPCA`. |
-| `DIMS_TO_USE` | `1:30` | Available PCA dimensions used for neighbors, clustering, and UMAP. |
-| `CLUSTER_RESOLUTION` | `0.5` | Resolution passed to `FindClusters`. |
-| `RANDOM_SEED` | `12345` | Seed supplied to clustering and UMAP. |
+The script calls `RunPCA`, restricts the dimension list to available principal components, constructs the graph with `FindNeighbors`, assigns clusters with `FindClusters`, and creates the UMAP with `RunUMAP`.
 
 ## Outputs
 
 ```text
 seurat_clustered.rds
-UMAP_by_cluster.png/.pdf
-UMAP_by_sample.png/.pdf            # when sample_id is present
+UMAP_by_cluster.png
+UMAP_by_cluster.pdf
+UMAP_by_sample.png
+UMAP_by_sample.pdf
 PCA_elbow_plot.pdf
 cluster_counts_by_sample.csv
 clustering_parameters.csv
-run_log.txt
-sessionInfo.txt
 ```
 
-`seurat_clustered.rds` contains the PCA, nearest-neighbor graph, initial Seurat clusters, and UMAP generated by this step. The Step 6 input description correctly identifies this file as its upstream object.
+The sample-colored UMAP is created when `sample_id` exists in the object metadata.
+
+## Example visual results
+
+`PCA_elbow_plot.pdf` shows principal-component number on the horizontal axis and component standard deviation on the vertical axis.
+
+`UMAP_by_cluster.png` displays one point per cell, colored by `seurat_clusters`, with cluster numbers placed on the corresponding groups.
+
+`UMAP_by_sample.png` uses the same UMAP coordinates and colors cells by `sample_id`. The two UMAP files present the cluster and sample metadata on the same two-dimensional cell arrangement.
 
 ---
 
-# 6. Optional Harmony integration, reclustering, markers, and annotation
+# Step 6 — Integration, reclustering, markers, and annotation
 
 **Script:** `6_Integration_Annotation/Integration_Annotation.R`
 
-## Purpose
+Step 6 reads `seurat_clustered.rds` and uses the PCA reduction created by Step 5. It can retain PCA as the downstream representation or calculate Harmony coordinates from a metadata batch column. Neighbors, clusters, and UMAP are recalculated from the selected representation.
 
-This stage:
+## Settings
 
-1. optionally applies Harmony to PCA coordinates;
-2. always recalculates nearest neighbors;
-3. always recalculates graph-based Seurat clusters;
-4. recalculates UMAP;
-5. performs positive marker-gene detection;
-6. applies an explicit p-value or adjusted-p-value threshold;
-7. assigns manual, SingleR, or cluster-only labels;
-8. exports several UMAP views and audit tables.
+| Setting | Default | Description |
+| --- | ---: | --- |
+| `CPU_CORES` | `4` | Base worker count. |
+| `FAST_UMAP` | `TRUE` | Controls `uwot.sgd` in UMAP. |
+| `FUTURE_MAX_SIZE_GB` | `8` | Future global-size setting. |
+| `MAX_CELLS_PER_CLUSTER` | `2000` | Maximum cells per cluster used by marker testing. |
+| `INTEGRATION_METHOD` | `None` | Selects `None` or `Harmony`. |
+| `BATCH_COLUMN` | `batch` | Metadata column used by Harmony. |
+| `DIMS_TO_USE` | `1:30` | PCA or Harmony dimensions used downstream. |
+| `CLUSTER_RESOLUTION` | `0.5` | Resolution for the recalculated clusters. |
+| `RANDOM_SEED` | `12345` | Seed for clustering, UMAP, and annotation processes. |
+| `UMAP_GROUP_COLUMNS` | `sample_id`, `patient`, `condition` | Metadata columns used to create additional UMAP views. |
+| `ANNOTATION_METHOD` | `Manual` | Selects `Manual`, `SingleR`, or `ClustersOnly`. |
+| `SINGLER_REFERENCE` | `HumanPrimaryCellAtlas` | SingleR reference; `BlueprintEncode` is also implemented. |
+| `MIN_MARKER_FRACTION` | `0.10` | Minimum expression fraction for marker testing. |
+| `MARKER_SIGNIFICANCE_TYPE` | `adjusted_pvalue` | Selects `p_val_adj` or `p_val` filtering. |
+| `MARKER_SIGNIFICANCE_THRESHOLD` | `0.01` | Marker significance cutoff. |
+| `MIN_MARKER_FC` | `1.5` | Minimum real fold change, converted to log2 scale for `FindAllMarkers`. |
 
-## Parameters in the current script
+## Integration and reclustering
 
-| Parameter | Default | Interpretation |
-|---|---:|---|
-| `CPU_CORES` | `4` | Base worker/thread count. |
-| `FAST_UMAP` | `TRUE` | Enables `uwot.sgd`; faster approximate UMAP optimization. |
-| `FUTURE_MAX_SIZE_GB` | `8` | Per-future global-export size ceiling; not reserved RAM. |
-| `MAX_CELLS_PER_CLUSTER` | `2000` | Caps cells per identity used for marker testing. `Inf` removes the cap. |
-| `INTEGRATION_METHOD` | `None` | `"Harmony"` or `"None"`. |
-| `BATCH_COLUMN` | `batch` | Metadata variable corrected by Harmony if Harmony is enabled. |
-| `DIMS_TO_USE` | `1:30` | PCA/Harmony dimensions used for neighbor graph, clustering, and UMAP. |
-| `CLUSTER_RESOLUTION` | `0.5` | Graph-clustering granularity. Higher values generally yield more/smaller clusters. |
-| `RANDOM_SEED` | `12345` | Reproducibility seed. |
-| `UMAP_GROUP_COLUMNS` | `sample_id`, `patient`, `condition` | Metadata columns used only to color/export UMAPs. |
-| `ANNOTATION_METHOD` | `Manual` | `"Manual"`, `"SingleR"`, or `"ClustersOnly"`. |
-| `SINGLER_REFERENCE` | `HumanPrimaryCellAtlas` | Reference used if `ANNOTATION_METHOD = "SingleR"`. Alternative supported value: `BlueprintEncode`. |
-| `MIN_MARKER_FRACTION` | `0.10` | Gene must be detected in at least 10% of either comparison group before marker testing. |
-| `MARKER_SIGNIFICANCE_TYPE` | `adjusted_pvalue` | Selects filtering on `p_val_adj` rather than raw `p_val`. |
-| `MARKER_SIGNIFICANCE_THRESHOLD` | `0.01` | Significance cutoff. |
-| `MIN_MARKER_FC` | `1.5` | Minimum real fold-change threshold. Internally converted to `log2(1.5)`. |
-| `MARKER_WORKERS` | `CPU_CORES` | Workers used for marker calculation. |
-| `SINGLER_WORKERS` | `CPU_CORES` | Workers used by SingleR/BiocParallel. |
-| `UMAP_THREADS` | `CPU_CORES` | UMAP native threads. |
+With `INTEGRATION_METHOD = "None"`, PCA is used for neighbors, clusters, and UMAP. With `INTEGRATION_METHOD = "Harmony"`, `RunHarmony` creates a reduction named `harmony`, and that reduction is used for neighbors, clusters, and UMAP.
 
-## Harmony safeguard
-
-If Harmony is requested, the script validates the `batch` metadata. It also checks a simple form of **batch–condition confounding** and stops if every batch contains only one condition, because in that design technical batch and biological condition cannot be cleanly separated.
-
-Harmony changes the low-dimensional representation used downstream; it does not replace the RNA count matrix.
-
-## Clustering and UMAP
-
-Regardless of whether Harmony is applied, the script recalculates:
-
-```text
-FindNeighbors
-FindClusters
-RunUMAP
-```
-
-using either the Harmony reduction or PCA.
-
-This is important: `CLUSTER_RESOLUTION` affects cluster assignment, while UMAP is a separate two-dimensional embedding. Changing resolution can change cluster labels without greatly changing the geometric arrangement of UMAP points.
+The graph names are constructed from the selected reduction. Cluster assignments are written to `seurat_clusters`, and the new UMAP replaces the existing `umap` reduction.
 
 ## Marker analysis
 
-Markers are called with a positive Wilcoxon test (`only.pos = TRUE`).
+The script joins RNA layers when needed and creates an RNA normalized-data layer when it is absent. `FindAllMarkers` runs a positive Wilcoxon test by cluster. The unfiltered and significance-filtered marker tables contain p-values, average log fold change, real fold change, within-cluster expression fraction, outside-cluster expression fraction, adjusted p-value, cluster, and gene.
 
-The exported marker table contains explicit columns such as:
+## Annotation modes
 
-```text
-p_val
-avg_log2FC
-FC
-fraction_cells_expressing_in_cluster
-fraction_cells_expressing_in_all_other_cells
-p_val_adj
-cluster
-gene
-```
+### Manual
 
-where:
+The manual mode reads a CSV containing `cluster` and `cell_type`. Cluster IDs are mapped to cell-type labels. When no annotation table is present, numerical labels such as `Cluster_0` are stored and `cluster_annotations_template.csv` is written.
 
-```text
-FC = 2^avg_log2FC
-```
+### SingleR
 
-and:
+The SingleR mode converts the RNA assay to a SingleCellExperiment and calculates cluster-level labels from Human Primary Cell Atlas or Blueprint/ENCODE reference data. The cluster predictions are written to `SingleR_cluster_predictions.csv`.
 
-- `fraction_cells_expressing_in_cluster` is the fraction of cells in the tested cluster in which the gene is detected;
-- `fraction_cells_expressing_in_all_other_cells` is the fraction outside that cluster in which the gene is detected.
+### ClustersOnly
 
-### Synthetic marker result
-
-```csv
-p_val,avg_log2FC,FC,fraction_cells_expressing_in_cluster,fraction_cells_expressing_in_all_other_cells,p_val_adj,cluster,gene
-1.2e-60,2.11,4.32,0.94,0.18,2.3e-56,0,CD3D
-4.5e-48,1.72,3.29,0.88,0.11,7.2e-44,0,TRBC1
-2.1e-70,2.56,5.90,0.91,0.07,4.4e-66,3,MS4A1
-```
-
-These are synthetic values.
-
-## Manual annotation
-
-With `ANNOTATION_METHOD = "Manual"`, if no valid annotation CSV is present the script writes:
-
-```text
-cluster_annotations_template.csv
-```
-
-Example:
-
-```csv
-cluster,cell_type
-0,T cells
-1,NK cells
-2,Monocytes
-3,B cells
-```
-
-The script verifies that annotation cluster IDs exactly match the current clustering. A stale annotation file from a previous clustering solution is rejected.
+The cluster-only mode creates labels such as `Cluster_0`, `Cluster_1`, and `Cluster_2` directly from `seurat_clusters`.
 
 ## Outputs
-
-Major outputs include:
 
 ```text
 seurat_integrated_annotated.rds
 cluster_cell_counts.csv
 cluster_markers_before_significance_filter.csv
 cluster_markers.csv
-cluster_annotations_template.csv        # when needed
-SingleR_cluster_predictions.csv          # when SingleR is used
+cluster_annotations_template.csv
+SingleR_cluster_predictions.csv
 UMAP_by_Seurat_clusters.png/.pdf
 UMAP_annotated_cell_types.png/.pdf
 UMAP_by_sample_id.png/.pdf
@@ -643,379 +386,91 @@ UMAP_by_condition.png/.pdf
 cell_type_counts_by_sample.csv
 cell_cluster_assignments.csv
 integration_annotation_summary.csv
-run_log.txt
-sessionInfo.txt
 ```
 
-## QC enabled by this step
+Template, SingleR, and metadata-specific files are created by the corresponding annotation mode or available metadata.
 
-This stage adds several strong analytical controls:
+## Example visual results
 
-- confirms PCA exists before clustering;
-- checks the requested dimensions actually exist;
-- validates Harmony metadata;
-- detects simple batch/condition confounding;
-- recalculates graph/clusters/UMAP even when Harmony is disabled;
-- records cluster sizes;
-- applies explicit marker FC, prevalence, and significance filters;
-- validates manual annotation cluster IDs;
-- exports UMAPs by biological and technical metadata;
-- records timing, worker settings, reduction used, number of clusters, marker counts, and whether RNA normalization had to be added.
+`UMAP_by_Seurat_clusters.png` colors cells by the recalculated cluster and prints cluster numbers on the plot title together with the resolution and reduction used.
 
-### Synthetic example: UMAP by cluster
+`UMAP_annotated_cell_types.png` uses the same coordinates and colors cells by `cell_type`, with cell-type labels placed on the groups.
 
-The corresponding script output is `6_Integration_Annotation/Output/UMAP_by_Seurat_clusters.png`.
-
-### Synthetic example: same embedding colored by condition
-
-The corresponding script output is `6_Integration_Annotation/Output/UMAP_by_condition.png` when `condition` is present in the metadata.
-
-These two figures illustrate an important QC concept: **the coordinates are the same; only the metadata used for coloring changes**. A strong sample- or batch-specific partition can indicate technical structure. A condition-specific pattern may be biological, confounded, or both, so it must be interpreted in the context of the experimental design.
+`UMAP_by_sample_id.png`, `UMAP_by_patient.png`, and `UMAP_by_condition.png` use the same coordinates and color cells by the corresponding metadata field. Together, the figures display the cluster, annotation, sample, patient, and condition organization of the final embedding.
 
 ---
 
-# 7. Sample-aware pseudobulk differential expression
+# Step 7 — Pseudobulk differential expression
 
 **Script:** `7_Pseudobulk_DE/Pseudobulk_DE.R`
 
-## Purpose
+Step 7 reads the annotated Seurat object, extracts raw RNA counts, groups cells by cell type and biological sample, creates sample-level pseudobulk count matrices, and performs edgeR quasi-likelihood differential-expression tests separately for each cell type.
 
-This stage performs **cell-type-specific pseudobulk differential-expression analysis with edgeR**.
+## Settings
 
-For each annotated cell type, raw RNA UMI counts are summed by biological sample. Differential expression is then tested using the sample-level pseudobulk profiles rather than treating individual cells as independent biological replicates.
-
-This is a critical design feature: cells from the same sample are not independent replicates.
-
-## Parameters
-
-| Parameter | Default | Interpretation |
-|---|---:|---|
+| Setting | Default | Description |
+| --- | ---: | --- |
 | `SAMPLE_COLUMN` | `sample_id` | Biological sample identifier. |
-| `CELL_TYPE_COLUMN` | `cell_type` | Cell-type label produced by annotation. |
-| `TEST_VARIABLE` | `condition` | Sample-level variable tested for DE. |
-| `REFERENCE_LEVEL` | `AUTO` | Reference group. Automatic selection is allowed only when unambiguous. |
-| `TEST_LEVEL` | `AUTO` | Test group. |
-| `DESIGN_FORMULA` | `~ condition` | edgeR design formula. Can include additional sample-level covariates, e.g. `~ patient + condition`, provided the design remains identifiable/full rank. |
-| `MINIMUM_CELLS_PER_SAMPLE_CELLTYPE` | `20` | A sample contributes to a given cell-type pseudobulk only when at least 20 cells of that type are available. |
-| `MINIMUM_SAMPLES_PER_GROUP` | `2` | Minimum eligible biological samples in both reference and test groups. |
-| `FDR_THRESHOLD` | `0.05` | False-discovery-rate threshold. |
-| `MINIMUM_REAL_FC` | `1.2` | Minimum absolute biological effect size. Converted to `log2(1.2)`. |
+| `CELL_TYPE_COLUMN` | `cell_type` | Cell-type label used to split the analysis. |
+| `TEST_VARIABLE` | `condition` | Metadata variable defining the comparison. |
+| `REFERENCE_LEVEL` | `AUTO` | Reference level selection. |
+| `TEST_LEVEL` | `AUTO` | Test level selection. |
+| `DESIGN_FORMULA` | `~ condition` | Sample-level model formula. |
+| `MINIMUM_CELLS_PER_SAMPLE_CELLTYPE` | `20` | Minimum cells contributing to a sample/cell-type pseudobulk profile. |
+| `MINIMUM_SAMPLES_PER_GROUP` | `2` | Minimum qualifying samples in each comparison group. |
+| `FDR_THRESHOLD` | `0.05` | FDR value used to label differential-expression results. |
+| `MINIMUM_REAL_FC` | `1.2` | Real fold-change threshold, converted to absolute log2 fold change. |
 
-## Contrast behavior
+## Pseudobulk construction
 
-When `REFERENCE_LEVEL` and `TEST_LEVEL` are both `AUTO` and `condition` contains exactly two observed levels, the first observed level becomes reference and the second becomes test.
+RNA count layers are joined when needed. A sparse sample-membership matrix aggregates cell columns into sample-level count columns for each cell type. The corresponding sample metadata forms the edgeR design matrix from `DESIGN_FORMULA`.
 
-The chosen comparison is always exported to:
+For each analyzed cell type, the script creates an edgeR `DGEList`, applies `filterByExpr`, calculates normalization factors, estimates dispersion, fits the quasi-likelihood model with `glmQLFit`, and performs the selected coefficient test with `glmQLFTest`.
 
-```text
-pseudobulk_contrast_used.csv
-```
-
-For a critical analysis, explicit levels are preferable, for example:
-
-```r
-REFERENCE_LEVEL <- "Control"
-TEST_LEVEL <- "Treatment"
-```
-
-## edgeR workflow
-
-For each cell type the script:
-
-1. requires enough cells per sample;
-2. requires enough eligible samples in both groups;
-3. aggregates raw RNA counts by sample;
-4. constructs the design matrix;
-5. verifies that the design matrix is full rank;
-6. identifies the exact requested coefficient;
-7. uses `filterByExpr`;
-8. calculates normalization factors;
-9. estimates dispersion robustly;
-10. fits a quasi-likelihood generalized linear model;
-11. performs a quasi-likelihood F test;
-12. calculates FDR and real fold change.
-
-The real fold-change column is:
+## Per-cell-type outputs
 
 ```text
-FC_test_over_reference = 2^logFC
-```
-
-Thus:
-
-```text
-logFC > 0  -> higher expression in TEST_LEVEL
-logFC < 0  -> lower expression in TEST_LEVEL
-```
-
-## Outputs
-
-```text
-pseudobulk_contrast_used.csv
-cell_type_composition_by_sample.csv
 DE_<cell_type>.csv
 Pseudobulk_counts_<cell_type>.csv
 Volcano_<cell_type>.png
 Volcano_<cell_type>.pdf
-DE_all_cell_types_combined.csv
-pseudobulk_analysis_summary.csv
-pseudobulk_run_summary.csv
-run_log.txt
-sessionInfo.txt
 ```
 
-## QC enabled by this step
+The differential-expression tables contain edgeR statistics together with significance labels based on FDR and absolute log2 fold change.
 
-This stage introduces **replicate-aware statistical QC**:
-
-- verifies all required metadata exist;
-- verifies sample-level covariates are constant within each sample;
-- verifies raw RNA counts are present;
-- joins multiple Seurat v5 count layers when necessary;
-- excludes sample/cell-type combinations with too few cells;
-- excludes contrasts with insufficient biological replicates;
-- stops on rank-deficient/confounded design matrices;
-- identifies the exact test coefficient instead of guessing;
-- records the exact contrast and thresholds;
-- reports analyzed versus skipped cell types.
-
-`MINIMUM_SAMPLES_PER_GROUP = 2` is the script's minimum acceptance criterion, not a claim that two biological replicates per group provide strong power. In real studies, additional independent biological replicates are generally desirable for stable dispersion estimates and inference.
-
-### Synthetic analysis summary
-
-```csv
-cell_type,status,reference_level,test_level,reference_samples,test_samples,eligible_samples,tested_genes,significant_genes
-T_cells,ANALYZED,Control,Treatment,5,5,10,12640,318
-B_cells,ANALYZED,Control,Treatment,5,5,10,11320,96
-NK_cells,ANALYZED,Control,Treatment,5,5,10,10985,142
-Dendritic_cells,SKIPPED_INSUFFICIENT_REPLICATES,Control,Treatment,1,2,3,0,0
-```
-
-### Synthetic differential-expression result
-
-```csv
-gene,cell_type,contrast,logFC,FC_test_over_reference,PValue,FDR,significant,direction
-IFIT3,T_cells,Treatment/Control,1.42,2.68,2.0e-09,3.2e-06,TRUE,UP_IN_TEST
-CXCR4,T_cells,Treatment/Control,-0.88,0.54,8.3e-07,0.0011,TRUE,DOWN_IN_TEST
-IL7R,T_cells,Treatment/Control,0.12,1.09,0.18,0.42,FALSE,NOT_SIGNIFICANT
-```
-
-All values above are synthetic.
-
-Expected volcano-plot style:
-
-Step 7 writes one `Volcano_<cell_type>.png` file for each analyzed cell type.
-
-The vertical dashed lines correspond to the absolute fold-change threshold and the horizontal dashed line corresponds to the FDR threshold.
-
----
-
-# Quality-control architecture of the complete stepped workflow
-
-The principal advantage of the stepped design is that QC is not concentrated in a single final plot. Each transformation produces an intermediate object and audit files that can be examined before the next stage.
-
-| QC layer | What is checked | Main outputs |
-|---|---|---|
-| Input integrity | FASTQ pairing, genome index, barcode whitelist | FASTQ manifest, STARsolo manifest |
-| Alignment/count generation | STARsolo mapping/cell-calling summary and required output files | `Summary.csv`, filtered/raw matrices |
-| Cell QC | genes/cell, UMI/cell, mitochondrial %, ribosomal % | pre/post QC tables, violin/scatter PDFs |
-| Doublet QC | doublet score and per-sample doublet calls | score histogram, summary table |
-| Normalization QC | variable-feature selection, model/regression settings | variable-feature plot, normalization summary |
-| Dimensional and initial cluster QC | Step 5 creates PCA, graph clusters, and UMAP | PCA elbow plot, cluster/sample UMAPs, cluster counts, clustering parameters |
-| Integration QC | batch metadata and simple batch-condition confounding check | integration summary, metadata-colored UMAPs |
-| Cluster QC | cluster resolution, cluster sizes, marker specificity | cluster UMAP, cluster-count table, marker table |
-| Annotation QC | annotation IDs must match current clusters | annotation template/predictions, annotated UMAP |
-| Replicate/statistical QC | sample-level metadata consistency, sufficient cells/replicates, full-rank design | pseudobulk summaries, exact contrast file |
-| DE QC | FDR + effect-size thresholds | cell-type DE tables and volcano plots |
-| Reproducibility | package versions, seeds, parameters, logs | `sessionInfo.txt`, `run_log.txt`, summary CSVs |
-
----
-
-# Recommended decision points between steps
-
-The scripts technically allow one step to feed the next, but scientific analysis should include explicit review checkpoints.
-
-## After Step 1
-
-Proceed only after confirming that:
-
-- each expected sample was detected;
-- read pairs are complete;
-- STARsolo completed for every sample;
-- mapping/cell-calling summaries are plausible for the experiment;
-- no sample is an extreme technical outlier without an explanation.
-
-## After Step 2
-
-Review pre/post-filter plots and `cell_counts_by_sample.csv`.
-
-Investigate:
-
-- unusually low genes/cell;
-- very high genes/cell;
-- high mitochondrial fractions;
-- large between-sample differences in retained-cell fraction.
-
-Do not change thresholds solely to make all samples look similar.
-
-## After Step 3
-
-Review the doublet fraction by sample and score distributions. A strong sample-specific shift may indicate a sample-loading or capture-quality issue.
-
-## After Step 4
-
-Check:
-
-- that the intended normalization method was used;
-- that the expected number of variable genes was recovered;
-- whether regressing `percent.mt` is scientifically justified;
-- whether variable genes are dominated by unwanted technical programs.
-
-## After Step 5
-
-Review the PCA elbow plot, initial cluster UMAP, sample-colored UMAP, cluster sizes, and the dimensions recorded in `clustering_parameters.csv`. Step 6 receives `seurat_clustered.rds` and currently requests the first 30 available PCA dimensions.
-
-## After Step 6
-
-Review multiple versions of the **same UMAP coordinates**:
-
-- clusters;
-- annotated cell types;
-- sample;
-- patient;
-- condition.
-
-A cluster should not be accepted solely because it appears visually separated. Inspect marker identity, marker prevalence, effect size, cluster size, sample contribution, and biological plausibility.
-
-If Harmony is enabled, verify that technical mixing improves without erasing expected biological structure.
-
-## After Step 7
-
-Confirm:
-
-- the exact `TEST_LEVEL / REFERENCE_LEVEL` contrast;
-- the number of biological samples contributing to every cell type;
-- skipped cell types and why they were skipped;
-- the design formula;
-- effect size together with FDR;
-- whether DE signals are driven by one sample rather than a reproducible group effect.
-
----
-
-# Example project layout
+## Combined outputs
 
 ```text
-scRNAseq/
-│
-├── 00_Install/
-│   └── 00_Install_R_Packages_scRNAseq.R
-│
-├── 1_StarSolo/
-│   ├── Starsolo_Rscript.R
-│   ├── Input/
-│   └── Output/
-│
-├── 2_Seurat/
-│   ├── Seurat_QC_Rscript.R
-│   ├── Input/
-│   └── Output/
-│
-├── 3_Doublet_Detection/
-│   ├── Doublet_Detection.R
-│   ├── Input/
-│   └── Output/
-│
-├── 4_Normalization/
-│   ├── Normalization_Rscript.R
-│   ├── Input/
-│   └── Output/
-│
-├── 5_Clustering/
-│   ├── Clustering_Rscript.R
-│   ├── Input/
-│   └── Output/
-│
-├── 6_Integration_Annotation/
-│   ├── Integration_Annotation.R
-│   ├── Input/
-│   └── Output/
-│
-└── 7_Pseudobulk_DE/
-    ├── Pseudobulk_DE.R
-    ├── Input/
-    └── Output/
+DE_all_cell_types_combined.csv
+pseudobulk_contrast_used.csv
+cell_type_composition_by_sample.csv
+pseudobulk_analysis_summary.csv
+pseudobulk_run_summary.csv
 ```
 
-The output RDS from one stage should be copied or linked into the next stage's `Input/` folder according to the project's workflow.
+`pseudobulk_contrast_used.csv` records the reference level, test level, coefficient, and design information. `cell_type_composition_by_sample.csv` records cell counts and cell-type fractions by sample. The summary tables record the status and dimensions of each cell-type analysis.
+
+## Example visual result
+
+Each `Volcano_<cell_type>.png` plots log2 fold change on the horizontal axis and `-log10(FDR)` on the vertical axis. Vertical lines mark the positive and negative log2 fold-change thresholds, and the horizontal line marks the FDR threshold. Point color represents the differential-expression category assigned by the script.
 
 ---
 
-# Running the scripts
+# Visual result index
 
-The scripts can be run from RStudio or from the command line, for example:
-
-```bash
-Rscript 2_Seurat/Seurat_QC_Rscript.R
-```
-
-Several scripts also contain a Windows-specific `setwd("C:\\scRNAseq\\...")` near the beginning. If the repository is installed elsewhere, edit or remove that line before execution; otherwise R can fail before the script-relative path logic is reached.
-
-Step 1 additionally requires STAR to be installed inside the selected Linux/WSL environment and available at the path configured by `STAR_EXECUTABLE`.
-
----
-
-# Reproducibility
-
-The scripts record `sessionInfo()` and/or `run_log.txt`, and several stages use fixed random seeds.
-
-For a reproducible analysis, archive:
-
-1. the exact script version;
-2. input metadata;
-3. all parameter CSV/summary files;
-4. `sessionInfo.txt`;
-5. `run_log.txt`;
-6. the exact reference genome/index and barcode whitelist used by STARsolo;
-7. manual annotation mapping files;
-8. the exact pseudobulk contrast and design formula.
-
-A fixed seed improves computational reproducibility, but it does not make an analysis biologically reproducible. Independent biological replication remains essential.
-
----
-
-# Scientific interpretation boundaries
-
-This pipeline performs computational QC and statistical analysis, but it cannot by itself determine whether an experiment is biologically valid.
-
-In particular:
-
-- a UMAP is a visualization, not a statistical test;
-- cluster resolution is an analytical choice, not a biological truth;
-- marker significance does not by itself establish cell identity;
-- Harmony should only correct genuine unwanted technical variation;
-- pseudobulk inference depends on independent biological samples, not on the number of cells alone;
-- fold change, FDR, prevalence, sample consistency, and domain biology should be interpreted together.
-
----
-
-# Synthetic example figures
-
-All figures below are generated from random synthetic data and exist only to show the *kind of visual output* produced by the workflow.
-
-| Pipeline stage | Example |
-|---|---|
-| Step 2 QC | `2_Seurat/Output/QC_violin_plots_before_filtering.pdf` |
-| Step 2 QC | `2_Seurat/Output/QC_scatter_plots_before_filtering.pdf` |
-| Step 3 doublets | `3_Doublet_Detection/Output/scDblFinder_score_distribution.png` |
-| Step 4 normalization | `4_Normalization/Output/variable_features.png` |
-| Step 5 clustering | `5_Clustering/Output/UMAP_by_cluster.png` |
-| Step 5 sample view | `5_Clustering/Output/UMAP_by_sample.png` |
-| Step 6 reclustering | `6_Integration_Annotation/Output/UMAP_by_Seurat_clusters.png` |
-| Step 6 metadata view | `6_Integration_Annotation/Output/UMAP_by_condition.png` |
-| Step 7 pseudobulk DE | `7_Pseudobulk_DE/Output/Volcano_<cell_type>.png` |
-
----
-
-## Status note
-
-This README documents the behavior and parameters present in the supplied scripts. It does **not** claim that every exact latest script version has been validated end-to-end on a complete biological dataset. The current files should be runtime-tested as a chained workflow before being designated a production release.
+| Step | Figure | Displayed result |
+| --- | --- | --- |
+| Step 2 | `QC_violin_plots_before_filtering.pdf` | Cell feature, count, mitochondrial, and ribosomal distributions by sample before filtering. |
+| Step 2 | `QC_scatter_plots_before_filtering.pdf` | Count/mitochondrial and count/feature relationships for individual cells. |
+| Step 2 | `QC_violin_plots_after_filtering.pdf` | Cell metric distributions after the QC filter. |
+| Step 3 | `scDblFinder_score_distribution.png` | Doublet-score distributions and singlet/doublet calls by sample. |
+| Step 4 | `variable_features.png` | Variable-feature variance and mean-expression relationship. |
+| Step 5 | `PCA_elbow_plot.pdf` | Standard deviation across principal components. |
+| Step 5 | `UMAP_by_cluster.png` | Initial PCA-based cluster assignments. |
+| Step 5 | `UMAP_by_sample.png` | Initial UMAP colored by sample. |
+| Step 6 | `UMAP_by_Seurat_clusters.png` | Recalculated cluster assignments from PCA or Harmony. |
+| Step 6 | `UMAP_annotated_cell_types.png` | Final cell-type annotation. |
+| Step 6 | `UMAP_by_sample_id.png` | Final UMAP colored by sample. |
+| Step 6 | `UMAP_by_patient.png` | Final UMAP colored by patient. |
+| Step 6 | `UMAP_by_condition.png` | Final UMAP colored by condition. |
+| Step 7 | `Volcano_<cell_type>.png` | Cell-type-specific edgeR fold changes and FDR values. |
