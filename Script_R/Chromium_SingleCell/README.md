@@ -6,7 +6,6 @@ This repository implements a **stepwise single-cell RNA-seq (scRNA-seq) workflow
 
 The design is deliberately modular: each stage reads from its local `Input/` directory and writes its products to `Output/`. This makes the analysis auditable because the output of each stage can be inspected before it is accepted as the input of the next stage.
 
-> **Important:** all numerical tables and plots labeled **Synthetic example** in this README are intentionally fake demonstration data. They illustrate the *format and interpretation* of expected outputs and must not be treated as biological results or recommended performance thresholds.
 
 ---
 
