@@ -1,6 +1,6 @@
-# Chromium single-cell RNA-seq pipeline
+# 10x Chromium 3′ v2/v3 single-cell gene-expression pipeline
 
-This directory contains a seven-step single-cell RNA-seq pipeline for Chromium/10x data. The workflow begins with paired FASTQ files, creates gene-by-cell count matrices, constructs and filters a Seurat object, identifies doublets, normalizes expression values, calculates PCA and clusters, assigns cell types, and performs cell-type-specific pseudobulk differential expression.
+This directory contains a seven-step single-cell RNA-seq pipeline specifically for 10x Chromium 3′ v2/v3 gene-expression data. It is not intended for conventional paired-end RNA-seq, 10x 5′ Gene Expression, Chromium Flex, ATAC-seq, or other 10x library types. The workflow begins with the specialized 10x R1/R2 FASTQ pair, creates gene-by-cell count matrices, constructs and filters a Seurat object, identifies doublets, normalizes expression values, calculates PCA and clusters, assigns cell types, and performs cell-type-specific pseudobulk differential expression.
 
 ## Pipeline map
 
@@ -73,7 +73,7 @@ The Bioconductor group includes SingleCellExperiment, SummarizedExperiment, S4Ve
 
 **Script:** `1_StarSolo/Starsolo_Rscript.R`
 
-Step 1 converts paired 10x FASTQ files into sparse gene-by-cell-barcode matrices with STARsolo.
+Step 1 converts paired 10x Chromium 3′ v2/v3 gene-expression FASTQ files into sparse gene-by-cell-barcode matrices with STARsolo. In these libraries, R1 contains the cell barcode and UMI rather than genomic cDNA; R2 contains the transcript sequence that is aligned to the genome.
 
 ## Inputs
 

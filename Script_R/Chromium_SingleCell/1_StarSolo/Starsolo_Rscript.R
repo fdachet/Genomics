@@ -1,6 +1,10 @@
 ###############################################################################
 # NUMBERED BIOINFORMATICS PIPELINE
 #
+# Scope: 10x Chromium 3' v2/v3 single-cell gene-expression libraries only.
+# R1 supplies the cell barcode/UMI and R2 supplies the transcript sequence.
+# This is not a conventional paired-end RNA-seq alignment workflow.
+#
 # This script always reads from the Input folder located beside the script and
 # writes to the Output folder located beside the script.
 #
