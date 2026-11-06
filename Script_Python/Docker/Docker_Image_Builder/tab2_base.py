@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from project_state import effective_builder_image
 
 
 class BaseTab(tk.Frame):
@@ -1204,8 +1205,14 @@ done
                 self.builder_tag.set(str(self.app.state.get("builder_image", "") or ""))
                 self.builder_status.config(text="ARCHIVE MISSING", fg="#922B21")
         else:
-            self.builder_tag.set("")
-            self.builder_status.config(text="Same as runtime", fg="#566573")
+            builder = effective_builder_image(self.app.state)
+            self.builder_tag.set(builder)
+            if builder and self._image_exists(builder):
+                self.builder_status.config(text="Same as runtime — LOADED", fg="#1E8449")
+            elif builder:
+                self.builder_status.config(text="Same as runtime — external only", fg="#B9770E")
+            else:
+                self.builder_status.config(text="Same as runtime", fg="#566573")
 
         shown = self._selected_record()
         if shown:
@@ -1316,6 +1323,10 @@ done
         expected = rec["tags"][0] if rec["tags"] else ""
         if expected and self._image_exists(expected):
             self._log(f"{role.title()} image already present in Docker: {expected}\n")
+            if role == "runtime":
+                self.runtime_status.config(text="LOADED", fg="#1E8449")
+            elif role == "builder":
+                self.builder_status.config(text="LOADED", fg="#1E8449")
             return True
 
         before = {row[0] for row in self._local_image_choices()}
@@ -1363,8 +1374,9 @@ done
             if not self._load_archive(builder_rec, "builder"):
                 return
         else:
-            self.builder_tag.set("")
-            self.builder_status.config(text="Same as runtime", fg="#566573")
+            builder = effective_builder_image(self.app.state)
+            self.builder_tag.set(builder)
+            self.builder_status.config(text="Same as runtime — LOADED" if builder else "Same as runtime", fg="#1E8449" if builder else "#566573")
         self._sync_prepare_to_state()
 
     def unload_gui_images(self):

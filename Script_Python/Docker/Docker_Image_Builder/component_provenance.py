@@ -7,6 +7,7 @@ import tarfile
 from datetime import datetime, timezone
 from pathlib import Path
 from image_removals import normalize_removals, remove_deferred_packages
+from project_state import effective_builder_image
 
 
 PROVENANCE_PATH = 'opt/component-builder/component_provenance.json'
@@ -226,7 +227,8 @@ def make_build_provenance(state, image, manifest, skipped, pending, mode, instal
                      'verified': False} for name in requested]
     deferred = remove_deferred_packages(list(dict.fromkeys(requested)), removals)
     runtime_id = image_identity(state.get('runtime_base_archive'), state.get('base_image', ''))
-    builder_id = image_identity(state.get('builder_base_archive'), state.get('builder_image', ''))
+    builder_archive = state.get('builder_base_archive') or state.get('runtime_base_archive')
+    builder_id = image_identity(builder_archive, effective_builder_image(state))
     previous_languages = (parent or {}).get('deferred_language_packages') or {}
     current_languages = pending.get('language_packages') or {}
     deferred_languages = {key: list(dict.fromkeys([*(previous_languages.get(key) or []), *(current_languages.get(key) or [])]))

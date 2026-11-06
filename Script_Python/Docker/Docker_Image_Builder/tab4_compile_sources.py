@@ -12,8 +12,10 @@ from tkinter import messagebox, ttk
 from build_artifacts import prepare_workspace, read_record, register_output
 from binary_version_probe import probe_binary_version
 from compilation_status import compilation_status
-from component_presets import BUILD_COMMANDS, COMMON_BUILD_COMMANDS
+from component_presets import BUILD_COMMANDS, COMMON_BUILD_COMMANDS, detect_build_system
 from component_output_detector import detect_compiled_output, normalized_relative
+from project_state import effective_builder_image
+from source_documentation import discover_build_documentation, open_build_documentation, show_build_documentation
 from network_policy import POLICY_OFFLINE, normalize_policy, package_names, inspect_packages, permission_message, validate_packages
 
 
@@ -37,6 +39,9 @@ class SourcesTab(tk.Frame):
         self.command = tk.StringVar()
         self.builddeps = tk.StringVar()
         self.outputrel = tk.StringVar()
+        self.document_choice = tk.StringVar()
+        self.document_link_text = tk.StringVar(value='No source documentation selected')
+        self.document_paths = {}
         self.status = tk.StringVar(value='NOT COMPILED')
         tk.Label(self, text='4 — COMPILE SOURCE PROGRAMS', bg='#CA6F1E', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
@@ -66,6 +71,17 @@ class SourcesTab(tk.Frame):
                 widget = tk.Entry(form, textvariable=variable)
             widget.grid(row=row, column=1, sticky='ew', padx=8, pady=3)
         tk.Button(form, text='Detect output', command=lambda: self.detect_output(force=True), bg='#F0B27A').grid(row=4, column=2)
+        document_bar = tk.Frame(self, bg='#FEF5E7')
+        document_bar.pack(fill='x', padx=15, pady=(0, 4))
+        tk.Label(document_bar, text='Source documentation:', bg='#FEF5E7').pack(side='left')
+        self.document_combo = ttk.Combobox(document_bar, textvariable=self.document_choice, width=37, state='disabled')
+        self.document_combo.pack(side='left', padx=(9, 8))
+        self.document_combo.bind('<<ComboboxSelected>>', self._update_document_link)
+        self.document_link = tk.Label(document_bar, textvariable=self.document_link_text, bg='#FEF5E7', fg='#1B4F72',
+                                      font=('Segoe UI', 9, 'underline'), cursor='hand2')
+        self.document_link.pack(side='left', padx=5)
+        self.document_link.bind('<Button-1>', self._open_document_file)
+        tk.Button(document_bar, text='View build instructions', bg='#F9E79F', command=self._view_document).pack(side='left', padx=10)
         bar = tk.Frame(self, bg='#FEF5E7')
         bar.pack(fill='x', padx=12, pady=7)
         tk.Button(bar, text='Detect build system & output', command=self.detect, bg='#F0B27A').pack(side='left', padx=3)
@@ -124,9 +140,9 @@ class SourcesTab(tk.Frame):
         if self._busy:
             return
         state = self.app.state
-        builder = str(state.get('builder_image', '') or '').strip()
+        builder = effective_builder_image(state)
         self.source_network.set(bool(state.get('allow_source_network', False)))
-        self.builder.set('Builder (Tab 1): ' + (builder or 'NOT SELECTED') + '    |    Runtime (Tab 1): ' + (state.get('base_image', '') or 'NOT SELECTED'))
+        self.builder.set('Builder (Tab 1): ' + (builder or 'NOT SELECTED') + (' (same as runtime)' if not state.get('builder_base_archive') else '') + '    |    Runtime (Tab 1): ' + (state.get('base_image', '') or 'NOT SELECTED'))
         names = [str(c.get('name', '')) for c in self._components() if c.get('enabled', True) and str(c.get('kind', '')).lower() == 'source']
         self.combo['values'] = names
         self._loading = True
@@ -136,6 +152,7 @@ class SourcesTab(tk.Frame):
                 value.set('')
             self._active = ''
             self.status.set('No enabled Source components in Tab 3')
+            self._refresh_documentation()
         else:
             if self.comp.get() not in names:
                 self.comp.set(names[0])
@@ -155,9 +172,49 @@ class SourcesTab(tk.Frame):
         self.outputrel.set(component.get('output_rel', ''))
         self._active = component.get('name', '')
         self._loading = False
-        if not self.outputrel.get().strip():
+        if not normalized_relative(self.outputrel.get()):
             self.detect_output(quiet=True)
+        self._refresh_documentation()
         self._set_status()
+
+    def _refresh_documentation(self):
+        source = Path(str(self.source.get() or '').strip())
+        documents = discover_build_documentation(source)
+        self.document_paths = {path.relative_to(source).as_posix(): path for path in documents}
+        choices = list(self.document_paths)
+        self.document_combo['values'] = choices
+        if self.document_choice.get() not in self.document_paths:
+            self.document_choice.set(choices[0] if choices else '')
+        self.document_combo.configure(state='readonly' if choices else 'disabled')
+        self._update_document_link()
+
+    def _update_document_link(self, event=None):
+        choice = self.document_choice.get()
+        if choice in self.document_paths:
+            self.document_link_text.set('Open ' + choice)
+            self.document_link.configure(fg='#1B4F72', cursor='hand2')
+        else:
+            self.document_link_text.set('No README or build instructions found')
+            self.document_link.configure(fg='#7B7D7D', cursor='arrow')
+
+    def _selected_document(self):
+        return self.document_paths.get(self.document_choice.get())
+
+    def _open_document_file(self, event=None):
+        path = self._selected_document()
+        if path is None:
+            return
+        try:
+            open_build_documentation(path)
+        except (OSError, ValueError):
+            show_build_documentation(self, path)
+
+    def _view_document(self):
+        path = self._selected_document()
+        if path is None:
+            messagebox.showinfo('Source documentation', 'No README or build instructions were found in the selected source folder.', parent=self)
+            return
+        show_build_documentation(self, path)
 
     def _set_status(self):
         if self._busy:
@@ -179,7 +236,7 @@ class SourcesTab(tk.Frame):
         if component is None:
             return
         result = detect_compiled_output(self.source.get(), self.system.get(), component.get('name', ''))
-        if result.path and (force or not self.outputrel.get().strip()):
+        if result.path and (force or not normalized_relative(self.outputrel.get())):
             self.outputrel.set(result.path)
         if not quiet:
             self.out.insert('end', f'Output detection: {result.message}\n')
@@ -192,22 +249,12 @@ class SourcesTab(tk.Frame):
         if not source.is_dir():
             messagebox.showerror('Source', 'The source folder selected in Tab 3 does not exist.', parent=self)
             return
-        markers = [('gradlew', 'Gradle wrapper', './gradlew build'), ('mvnw', 'Maven wrapper', './mvnw package'),
-                   ('CMakeLists.txt', 'CMake', 'cmake -S . -B build && cmake --build build'),
-                   ('meson.build', 'Meson', 'meson setup build && meson compile -C build'),
-                   ('pom.xml', 'Maven', 'mvn package'), ('build.gradle', 'Gradle', 'gradle build'),
-                   ('build.gradle.kts', 'Gradle', 'gradle build'), ('Cargo.toml', 'Cargo', 'cargo build --release'),
-                   ('configure', 'Configure/Make', './configure && make'), ('configure.ac', 'Autotools', 'autoreconf -i && ./configure && make'),
-                   ('Makefile', 'Make', 'make'), ('makefile', 'Make', 'make'), ('GNUmakefile', 'Make', 'make'),
-                   ('build.ninja', 'Ninja', 'ninja'), ('pyproject.toml', 'Python', 'python -m pip install .'),
-                   ('setup.py', 'Python legacy', 'python setup.py build'), ('DESCRIPTION', 'R package', 'R CMD INSTALL .'),
-                   ('SConstruct', 'SCons', 'scons'), ('go.mod', 'Go', 'go build')]
-        for marker, system, command in markers:
-            if (source / marker).exists():
-                self.system.set(system)
-                self.command.set(command)
-                self.out.insert('end', f'Build system: {system} ({marker}); suggested command: {command}\n')
-                break
+        component = self._selected()
+        system, command = detect_build_system(source, component.get('name', '') if component else '')
+        if command:
+            self.system.set(system)
+            self.command.set(command)
+            self.out.insert('end', f'Build system: {system}; suggested command: {command}\n')
         else:
             self.out.insert('end', 'Build system not recognized. Enter a suitable build command.\n')
         self.detect_output(force=False)
@@ -217,33 +264,11 @@ class SourcesTab(tk.Frame):
         source = Path(str(component.get('source', '') or '').strip())
         if not source.is_dir():
             raise ValueError('Source folder does not exist: ' + str(source))
-        markers = (
-            ('gradlew', 'Gradle wrapper', './gradlew build'),
-            ('mvnw', 'Maven wrapper', './mvnw package'),
-            ('CMakeLists.txt', 'CMake', 'cmake -S . -B build && cmake --build build'),
-            ('meson.build', 'Meson', 'meson setup build && meson compile -C build'),
-            ('pom.xml', 'Maven', 'mvn package'),
-            ('build.gradle', 'Gradle', 'gradle build'),
-            ('build.gradle.kts', 'Gradle', 'gradle build'),
-            ('Cargo.toml', 'Cargo', 'cargo build --release'),
-            ('configure', 'Configure/Make', './configure && make'),
-            ('configure.ac', 'Autotools', 'autoreconf -i && ./configure && make'),
-            ('Makefile', 'Make', 'make'),
-            ('makefile', 'Make', 'make'),
-            ('GNUmakefile', 'Make', 'make'),
-            ('build.ninja', 'Ninja', 'ninja'),
-            ('pyproject.toml', 'Python', 'python -m pip install .'),
-            ('setup.py', 'Python legacy', 'python setup.py build'),
-            ('DESCRIPTION', 'R package', 'R CMD INSTALL .'),
-            ('SConstruct', 'SCons', 'scons'),
-            ('go.mod', 'Go', 'go build'),
-        )
         if not str(component.get('build_command', '') or '').strip():
-            for marker, system, command in markers:
-                if (source / marker).exists():
-                    component['build_system'] = system
-                    component['build_command'] = command
-                    break
+            system, command = detect_build_system(source, component.get('name', ''))
+            if command:
+                component['build_system'] = system
+                component['build_command'] = command
         if not str(component.get('build_command', '') or '').strip():
             raise ValueError('Cannot detect a build command. Select this component in Tab 4 and enter the command.')
         if not normalized_relative(component.get('output_rel', '')):
@@ -489,9 +514,9 @@ class SourcesTab(tk.Frame):
             return
         if not self._save():
             return
-        builder = str(self.app.state.get('builder_image', '') or '').strip()
+        builder = effective_builder_image(self.app.state)
         if not builder:
-            messagebox.showerror('Compile', 'Select and load the builder image in Tabs 1–2.', parent=self)
+            messagebox.showerror('Compile', 'Select a runtime image in Tab 1 and load it in Tab 2, or select a separate builder image.', parent=self)
             return
         targets = [component for component in components if component.get('enabled', True) and str(component.get('kind', '')).strip().lower() == 'source']
         if not targets:

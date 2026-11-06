@@ -39,6 +39,8 @@ def normalized_relative(value):
     value = str(value or '').strip().replace('\\', '/')
     p = PurePosixPath(value)
     if (not value or p.is_absolute() or ':' in value or
+            any(char in value for char in '$%*?[]{}') or
+            any(ord(char) < 32 for char in value) or
             any(part in ('..', '.') for part in value.split('/'))):
         return ''
     if not p.parts:
@@ -96,16 +98,44 @@ def _makefile_target_candidates(source):
     rules = {}
     phony = set()
     first_target = None
-    
+    variables = {}
     content = re.sub(r'\\\n\s*', ' ', content)
-    for line in content.splitlines():
+    lines = content.splitlines()
+    for line in lines:
+        if not line or line[0].isspace() or line.lstrip().startswith('#'):
+            continue
+        assignment = re.match(r'^([A-Za-z_][A-Za-z0-9_.-]*)\s*(:=|\?=|\+=|=)\s*(.*)$', line)
+        if assignment is None:
+            continue
+        key, operation, raw_value = assignment.groups()
+        value = raw_value.split('#', 1)[0].strip()
+        if operation == '?=' and key in variables:
+            continue
+        if operation == '+=':
+            variables[key] = (variables.get(key, '') + ' ' + value).strip()
+        else:
+            variables[key] = value
+
+    variable_pattern = re.compile(r'\$\(([^()]+)\)|\$\{([^{}]+)\}')
+
+    def expand(value):
+        result = value
+        for _ in range(12):
+            expanded = variable_pattern.sub(lambda match: variables.get(
+                (match.group(1) or match.group(2)).strip(), match.group(0)), result)
+            if expanded == result:
+                break
+            result = expanded
+        return result
+
+    for line in lines:
         if not line or line[0].isspace() or line.lstrip().startswith('#'):
             continue
         rule = re.match(r'^([^:#=]+?)\s*:(?![=])(.*)$', line)
         if not rule:
             continue
-        left = rule.group(1).strip()
-        right = rule.group(2).split('#', 1)[0].split(';', 1)[0].strip()
+        left = expand(rule.group(1).strip())
+        right = expand(rule.group(2).split('#', 1)[0].split(';', 1)[0].strip())
         if left == '.PHONY':
             phony.update(right.split())
             continue
@@ -142,15 +172,30 @@ def _makefile_target_candidates(source):
 
 
 def _cmake_candidates(source):
-    cmake = source / 'CMakeLists.txt'
-    if not cmake.is_file():
-        return []
-    try:
-        contents = cmake.read_text(encoding='utf-8', errors='replace')
-    except OSError:
-        return []
-    targets = re.findall(r'\badd_executable\s*\(\s*([A-Za-z0-9_.+-]+)', contents, re.I)
-    return [f'build/{target}' for target in dict.fromkeys(targets)]
+    for relative in ('', 'source', 'src'):
+        cmake = source / relative / 'CMakeLists.txt' if relative else source / 'CMakeLists.txt'
+        if not cmake.is_file():
+            continue
+        try:
+            contents = cmake.read_text(encoding='utf-8', errors='replace')
+        except OSError:
+            continue
+        targets = re.findall(r'\badd_executable\s*\(\s*([A-Za-z0-9_.+-]+)', contents, re.I)
+        return [f'build/{target}' for target in dict.fromkeys(targets)]
+    return []
+
+
+def build_target_names(component_name, source_folder):
+    names = []
+    for value in (component_name, Path(source_folder).name):
+        name = str(value or '').strip()
+        if not name:
+            continue
+        names.append(name.casefold())
+        without_version = re.split(r'(?=[\s_-]v?\d)', name, maxsplit=1)[0].strip(' _-')
+        if without_version:
+            names.append(without_version.casefold())
+    return set(names)
 
 
 def detect_compiled_output(source_folder, build_system='', component_name=''):
@@ -165,26 +210,27 @@ def detect_compiled_output(source_folder, build_system='', component_name=''):
         return OutputDetection(message='Source directory does not exist.')
 
     outputs, truncated = _existing_outputs(source)
-    make_targets, makefile_name = _makefile_target_candidates(source)
-    
-    known_targets = set(make_targets)
-    matched_outputs = [p for p in outputs if p in known_targets]
-    if len(matched_outputs) == 1:
-        return OutputDetection(matched_outputs[0],
-                               f'Found executable declared by {makefile_name}.', True)
-    if len(matched_outputs) > 1:
-        return OutputDetection(message='Multiple built Make targets found; select the desired output.',
-                               ambiguous=True, candidates=tuple(matched_outputs))
-    if len(make_targets) == 1:
-        path = make_targets[0]
-        exists = (source / path).is_file() and _is_elf_or_script(source / path)
-        return OutputDetection(path, (
-            f'{makefile_name} identifies this build target; executable verified.' if exists
-            else f'Suggested from {makefile_name}; confirm it exists after the build.'
-        ), exists)
-    if len(make_targets) > 1:
-        return OutputDetection(message='Multiple Make outputs found; cannot choose safely.',
-                               ambiguous=True, candidates=tuple(make_targets))
+    preferred_names = build_target_names(component_name, source)
+    for relative in ('', 'source', 'src'):
+        work = source / relative if relative else source
+        if not work.is_dir():
+            continue
+        make_targets, makefile_name = _makefile_target_candidates(work)
+        if not make_targets:
+            continue
+        candidates = [f'{relative}/{target}' if relative else target for target in make_targets]
+        named = [target for target in candidates if Path(target).name.casefold() in preferred_names]
+        matches = [target for target in candidates if target in outputs]
+        selected = named if named else matches if matches else candidates
+        if len(selected) == 1:
+            path = selected[0]
+            exists = (source / path).is_file() and _is_elf_or_script(source / path)
+            return OutputDetection(path, (
+                f'{makefile_name} identifies this build target; executable verified.' if exists
+                else f'Suggested from {relative + "/" if relative else ""}{makefile_name}; confirm it exists after the build.'
+            ), exists)
+        return OutputDetection(message='Multiple Make outputs found; select the desired executable.',
+                               ambiguous=True, candidates=tuple(selected))
 
     cmake = _cmake_candidates(source)
     if len(cmake) == 1:

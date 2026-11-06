@@ -3,6 +3,15 @@ from copy import deepcopy
 from pathlib import Path
 
 
+def effective_builder_image(state):
+    explicit = str(state.get('builder_image', '') or '').strip()
+    if explicit:
+        return explicit
+    if str(state.get('builder_base_archive', '') or '').strip():
+        return ''
+    return str(state.get('base_image', '') or '').strip()
+
+
 class ProjectState(dict):
     DEFAULTS = {
         "project_dir": "",

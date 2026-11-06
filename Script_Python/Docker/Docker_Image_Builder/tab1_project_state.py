@@ -7,6 +7,7 @@ from tkinter import filedialog, messagebox, scrolledtext, ttk
 from docker_windows_diagnostics import DockerWindowsDiagnostics
 from network_policy import POLICY_OFFLINE, POLICY_APPROVAL, normalize_policy
 from build_modes import normalize_mode
+from project_state import effective_builder_image
 
 
 class ProjectStateTab(tk.Frame):
@@ -232,7 +233,7 @@ class ProjectStateTab(tk.Frame):
         tk.Button(action_frame, text="Close", command=dialog.destroy).pack(side="right", padx=3)
 
         runtime = str(self.app.state.get("base_image", "") or "")
-        builder = str(self.app.state.get("builder_image", "") or "")
+        builder = effective_builder_image(self.app.state)
 
         def append(message):
             def update():
@@ -485,7 +486,7 @@ class ProjectStateTab(tk.Frame):
             "runtime_base_archive": state.get("runtime_base_archive", ""),
             "base_image": state.get("base_image", ""),
             "builder_base_archive": state.get("builder_base_archive", "") or "(same as runtime)",
-            "builder_image": state.get("builder_image", "") or "(same as runtime)",
+            "builder_image": effective_builder_image(state) or "(same as runtime)",
             "base_os": system.get("os", ""),
             "base_arch": system.get("architecture", ""),
             "base_libc": system.get("glibc", ""),

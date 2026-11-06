@@ -5,6 +5,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from component_output_detector import detect_compiled_output, normalized_relative
+from project_state import effective_builder_image
 
 SKIP_DIRS = {'.git', '.hg', '.svn', '__pycache__', '.venv', 'venv', '.docker_component_builder', '_compiled_artifacts'}
 
@@ -89,7 +90,7 @@ def read_record(state, component, validate=True):
         if not path.is_file():
             return None, 'Compiled artifact file is missing. Recompile in Tab 4.'
         if validate:
-            builder = str(state.get('builder_image', '') or '').strip()
+            builder = effective_builder_image(state)
             if record.get('signature') != fingerprint(component, builder, str(state.get('project_dir', '') or '')):
                 return None, 'Source or build settings changed. Recompile in Tab 4.'
             if sha256_file(path) != record.get('sha256'):
@@ -157,7 +158,7 @@ def register_output(state, component, work):
     shutil.copy2(source_file, target)
     if not (target.stat().st_mode & 0o111):
         target.chmod(target.stat().st_mode | 0o755)
-    builder = str(state.get('builder_image', '') or '').strip()
+    builder = effective_builder_image(state)
     record = {
         'artifact': str(target.resolve()),
         'source': str(source_path(component, str(state.get('project_dir', '') or ''))),

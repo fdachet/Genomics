@@ -4,6 +4,7 @@ import ntpath
 import posixpath
 import re
 import shlex
+from component_output_detector import _makefile_target_candidates, build_target_names
 
 BUILD_COMMANDS = {
     "Make": "make",
@@ -30,6 +31,7 @@ COMMON_BUILD_COMMANDS = (
 )
 
 DETECTORS = (
+    ("gradlew", "Gradle"), ("mvnw", "Maven"),
     ("CMakeLists.txt", "CMake"), ("meson.build", "Meson"),
     ("pom.xml", "Maven"), ("build.gradle", "Gradle"),
     ("build.gradle.kts", "Gradle"), ("Cargo.toml", "Cargo"),
@@ -41,13 +43,42 @@ DETECTORS = (
 )
 
 
-def detect_build_system(path):
+def preferred_make_target(directory, component_name='', source_folder=''):
+    targets, _ = _makefile_target_candidates(Path(directory))
+    names = build_target_names(component_name, source_folder or directory)
+    for target in targets:
+        if target.casefold() in names:
+            return target
+    return ''
+
+
+def detect_build_system(path, component_name=''):
     directory = Path(str(path).strip())
     if not directory.is_dir():
         return "", ""
-    for marker, system in DETECTORS:
-        if (directory / marker).exists():
-            return system, BUILD_COMMANDS[system]
+    for relative in ('', 'source', 'src'):
+        work = directory / relative if relative else directory
+        if not work.is_dir():
+            continue
+        for marker, system in DETECTORS:
+            if not (work / marker).is_file():
+                continue
+            command = BUILD_COMMANDS[system]
+            if marker == 'gradlew':
+                command = './gradlew build'
+            elif marker == 'mvnw':
+                command = './mvnw package'
+            elif system == 'Make':
+                target = preferred_make_target(work, component_name, directory)
+                command = 'make' + (f' -C {shlex.quote(relative)}' if relative else '')
+                if target:
+                    command += ' ' + shlex.quote(target)
+                return system, command
+            elif system == 'CMake' and relative:
+                return system, f'cmake -S {shlex.quote(relative)} -B build && cmake --build build -j 4'
+            if relative:
+                command = f'cd {shlex.quote(relative)} && {command}'
+            return system, command
     return "", ""
 
 
