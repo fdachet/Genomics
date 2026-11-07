@@ -7,6 +7,7 @@ import posixpath
 import shlex
 import tkinter as tk
 from pathlib import Path
+from source_archive import archive_stem, is_source_archive
 from tkinter import filedialog, messagebox, simpledialog, ttk, scrolledtext
 
 from binary_version_probe import probe_binary_version, inspect_jar
@@ -23,6 +24,8 @@ from manual_installation_overrides import ManualOverrideDialog, records_for_imag
 
 
 from local_package_catalog import package_catalog, package_identity, package_archive_type, compatible_package_file, installed_packages, component_files, component_package_identity, installed_package_record, installed_java_versions
+from local_builder_package_dialog import LocalBuilderPackageDialog
+from repository_package_dialog import RepositoryPackageInstallDialog
 
 
 class ComponentsTab(tk.Frame):
@@ -81,6 +84,21 @@ class ComponentsTab(tk.Frame):
         tk.Button(toolbar, text="Import component JSON", bg="#5DADE2", command=self.import_component_json).pack(side="left", padx=3)
         tk.Button(toolbar, text="Export selected JSON", bg="#3498DB", fg="white", command=self.export_selected_json).pack(side="left", padx=3)
         tk.Button(toolbar, text="Refresh", bg="#A2D9CE", command=self.refresh).pack(side="left", padx=3)
+
+        local_install_row = tk.Frame(self, bg='#E8F8F5')
+        local_install_row.pack(fill='x', padx=14, pady=(0, 6))
+        tk.Button(local_install_row, text='Install local package into builder', bg='#F5B041',
+                  command=self.install_local_builder_packages).pack(side='left', padx=3)
+        tk.Button(local_install_row, text='Install local package into runtime base', bg='#85C1E9',
+                  command=self.install_local_runtime_packages).pack(side='left', padx=3)
+        tk.Button(local_install_row, text='Install packages online into builder', bg='#58D68D',
+                  command=lambda: RepositoryPackageInstallDialog(self, self.app, target='builder',
+                                                                 on_complete=self.refresh)).pack(side='left', padx=3)
+        tk.Button(local_install_row, text='Install packages online into runtime', bg='#76D7C4',
+                  command=lambda: RepositoryPackageInstallDialog(self, self.app, target='runtime',
+                                                                 on_complete=self.refresh)).pack(side='left', padx=3)
+        tk.Label(local_install_row, text='Local files: offline. Online: dependencies resolved automatically after approval.',
+                 bg='#E8F8F5', fg='#21618C', anchor='w').pack(side='left', padx=10)
 
         self.show_image_components = tk.BooleanVar(value=bool(self.app.state.get('show_image_components', False)))
         image_row = tk.Frame(self, bg='#E8F8F5')
@@ -201,17 +219,37 @@ class ComponentsTab(tk.Frame):
         self.compilation_summary = tk.StringVar(value="")
         tk.Label(self, textvariable=self.compilation_summary, bg="#D5F5E3", fg="#0E6655",
                  anchor="w", padx=10, pady=5).pack(fill="x", padx=12, pady=(0, 4))
-        tk.Label(
-            self,
-            text="Dependency messages",
-            bg="#E8F8F5",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=12)
+        messages_header = tk.Frame(self, bg="#E8F8F5")
+        messages_header.pack(fill="x", padx=12)
+        tk.Label(messages_header, text="Dependency messages", bg="#E8F8F5",
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Button(messages_header, text="Clear log", bg="#D6DBDF",
+                  command=lambda: self.output.delete('1.0', 'end')).pack(side="right")
 
         self.output = tk.Text(self, height=8, bg="white", font=("Consolas", 9))
         self.output.pack(fill="x", padx=12, pady=(4, 12))
 
         self.refresh()
+
+    def _selected_local_package_files(self):
+        files = []
+        for item in self.tree.selection():
+            try:
+                index = int(item)
+                component = self.app.state.get('components', [])[index]
+            except (ValueError, IndexError, TypeError):
+                continue
+            if str(component.get('kind', '')).lower() == 'os package':
+                files.extend(component_files(component))
+        return files
+
+    def install_local_builder_packages(self):
+        LocalBuilderPackageDialog(self, self.app, initial_files=self._selected_local_package_files(),
+                                  on_complete=self.refresh, target='builder')
+
+    def install_local_runtime_packages(self):
+        LocalBuilderPackageDialog(self, self.app, initial_files=self._selected_local_package_files(),
+                                  on_complete=self.refresh, target='runtime')
 
     def _blank_component(self):
         return {
@@ -807,6 +845,8 @@ class ComponentsTab(tk.Frame):
         if not last_part or last_part in (".", ".."):
             return ""
         kind = str(kind or "").lower().strip()
+        if kind == 'source' and is_source_archive(raw_path):
+            return archive_stem(raw_path)
         path = Path(raw_path)
         is_folder = kind in ("folder", "source") and not path.is_file()
         if path.is_dir():
@@ -1046,9 +1086,9 @@ class ComponentsTab(tk.Frame):
         source_build_note = tk.Label(
             form,
             text=(
-                "Source compilation is configured only in Tab 4 — Compile Sources. "
-                "There you can auto-detect the build system, edit the build command, "
-                "specify the compiled output, and test the build in Docker."
+                "Select an extracted source folder or a ZIP / TAR / TAR.GZ / TAR.XZ archive directly. "
+                "Archives are unpacked inside Docker, never into a Windows source folder. "
+                "Configure the build command, output, and required builder tools in Tab 4."
             ),
             bg="#D5F5E3", fg="#0B5345", anchor="w", justify="left",
             wraplength=960, padx=12, pady=8,

@@ -47,8 +47,8 @@ class BaseTab(tk.Frame):
         selection_note.pack(fill="x", padx=14, pady=(10, 5))
         tk.Label(
             selection_note,
-            text="Runtime and builder archives are selected ONLY in Tab 1 — Project / Base. "
-                 "The paths below are read-only; Tab 2 loads images and inspects their contents.",
+            text="Runtime and builder images are selected in Tab 1 — Project / Base. "
+                 "A TAR is optional: Tab 2 inspects Docker tags directly and shows their installed packages.",
             bg="#D6EAF8", fg="#154360", justify="left", anchor="w", padx=10, pady=8,
         ).pack(side="left", fill="x", expand=True)
         selectors = tk.LabelFrame(
@@ -211,7 +211,10 @@ class BaseTab(tk.Frame):
         inventory_body.rowconfigure(0, weight=1)
         inventory_body.columnconfigure(0, weight=1)
 
-        tk.Label(self.analysis_frame, text="Base analysis / activity log", bg="#EAF2F8", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        analysis_header = tk.Frame(self.analysis_frame, bg="#EAF2F8")
+        analysis_header.pack(fill="x")
+        tk.Label(analysis_header, text="Base analysis / activity log", bg="#EAF2F8", font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Button(analysis_header, text="Clear log", bg="#D6DBDF", command=lambda: self.out.delete('1.0', 'end')).pack(side="right", padx=3)
         analysis_body = tk.Frame(self.analysis_frame, bg="#EAF2F8")
         analysis_body.pack(fill="both", expand=True, pady=(4, 0))
         self.out = tk.Text(analysis_body, bg="white", font=("Consolas", 9), height=13, wrap="word")
@@ -266,26 +269,49 @@ class BaseTab(tk.Frame):
         return None
 
     def _runtime_record(self):
-        return self._find_record_by_path(self.app.state.get("runtime_base_archive", ""))
+        selected_archive = str(self.app.state.get("runtime_base_archive", "") or "").strip()
+        if selected_archive:
+            return self._find_record_by_path(selected_archive)
+        return self._tag_record("runtime")
 
     def _builder_record(self):
         builder_path = self.app.state.get("builder_base_archive", "")
-        if not builder_path:
-            return self._runtime_record()
-        return self._find_record_by_path(builder_path)
+        if builder_path:
+            return self._find_record_by_path(builder_path)
+        if self.app.state.get("builder_image"):
+            return self._tag_record("builder")
+        return self._runtime_record()
+
+    def _tag_record(self, role):
+        tag_key = "base_image" if role == "runtime" else "builder_image"
+        inventory_key = "base_inventory" if role == "runtime" else "builder_inventory"
+        system_key = "base_system" if role == "runtime" else "builder_system"
+        tag = str(self.app.state.get(tag_key, "") or "").strip()
+        if not tag:
+            return None
+        inventory = self.app.state.get(inventory_key)
+        inspection = dict(inventory) if isinstance(inventory, dict) else {}
+        system = self.app.state.get(system_key)
+        if isinstance(system, dict) and system and not inspection.get("system"):
+            inspection["system"] = dict(system)
+        return {
+            "path": "", "tags": [tag], "size": 0, "tag_only": True, "role": role,
+            "metadata": {"docker_tag": tag, "inspection": inspection},
+        }
 
     def _inventory_short_summary(self, rec):
         if not rec:
             return "not selected"
-        metadata = rec.get("metadata") or self._read_sidecar(rec.get("path", ""))
+        metadata = rec.get("metadata") or (self._read_sidecar(rec.get("path", "")) if rec.get("path") else {})
+        label = rec["tags"][0] if rec.get("tag_only") else Path(rec.get("path", "")).name
         inspection = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
         if not inspection:
-            return f"{Path(rec.get('path','')).name}: not inspected"
+            return f"{label}: not inspected"
         system = inspection.get("system") if isinstance(inspection.get("system"), dict) else {}
         packages = inspection.get("packages") if isinstance(inspection.get("packages"), dict) else {}
         executables = inspection.get("executables") if isinstance(inspection.get("executables"), list) else []
         os_packages = packages.get("os", []) if isinstance(packages.get("os", []), list) else []
-        return (f"{Path(rec.get('path','')).name}: {system.get('os','unknown')} | "
+        return (f"{label}: {system.get('os','unknown')} | "
                 f"{system.get('architecture','unknown')} | {len(executables)} executables | "
                 f"{len(os_packages)} OS packages")
 
@@ -293,11 +319,36 @@ class BaseTab(tk.Frame):
         runtime = self._runtime_record()
         builder_path = self.app.state.get("builder_base_archive", "")
         builder = self._builder_record()
-        self.runtime_role_summary.set("Runtime contents: " + self._inventory_short_summary(runtime))
-        if not builder_path:
-            self.builder_role_summary.set("Builder contents: SAME AS RUNTIME — " + self._inventory_short_summary(runtime))
-        else:
+        runtime_description = (self._inventory_short_summary(runtime) if runtime else
+                               self._docker_tag_summary('base_image', 'base_inventory', 'base_system'))
+        self.runtime_role_summary.set("Runtime contents: " + runtime_description)
+        if builder_path:
             self.builder_role_summary.set("Builder contents: " + self._inventory_short_summary(builder))
+        elif self.app.state.get('builder_image'):
+            self.builder_role_summary.set("Builder contents: " +
+                                          self._docker_tag_summary('builder_image', 'builder_inventory', 'builder_system'))
+        else:
+            self.builder_role_summary.set("Builder contents: SAME AS RUNTIME — " + runtime_description)
+
+    def _docker_tag_summary(self, tag_key, inventory_key, system_key):
+        tag = str(self.app.state.get(tag_key) or '')
+        if not tag:
+            return 'not selected'
+        inventory = self.app.state.get(inventory_key) or {}
+        system = self.app.state.get(system_key) or {}
+        if not isinstance(inventory, dict):
+            inventory = {}
+        if not isinstance(system, dict):
+            system = {}
+        packages = inventory.get('packages') or {}
+        if not isinstance(packages, dict):
+            packages = {}
+        executables = inventory.get('executables') or []
+        if not isinstance(executables, list):
+            executables = []
+        return (tag + ' | ' + str(system.get('os') or '?') + ' | ' +
+                str(len(executables)) + ' executables | ' +
+                str(len(packages.get('os') or [])) + ' OS packages')
 
     def _display_selected_inventory(self, rec):
         if rec is None:
@@ -309,7 +360,7 @@ class BaseTab(tk.Frame):
         self._active_role = "runtime"
         rec = self._runtime_record()
         if not rec:
-            messagebox.showwarning("Runtime base", "No runtime base archive is selected.")
+            messagebox.showwarning("Runtime base", "No runtime Docker image is selected.")
             return
         self._display_selected_inventory(rec)
 
@@ -317,7 +368,7 @@ class BaseTab(tk.Frame):
         self._active_role = "builder"
         rec = self._builder_record()
         if not rec:
-            messagebox.showwarning("Builder base", "No builder base archive is selected.")
+            messagebox.showwarning("Builder base", "No builder Docker image is selected.")
             return
         self._display_selected_inventory(rec)
 
@@ -419,6 +470,8 @@ class BaseTab(tk.Frame):
         return Path(archive_path).with_suffix(".json")
 
     def _read_sidecar(self, archive_path):
+        if not archive_path:
+            return {}
         p = self._sidecar_path(archive_path)
         if not p.exists():
             return {}
@@ -500,7 +553,7 @@ class BaseTab(tk.Frame):
         r_packages = packages.get("r", []) if isinstance(packages.get("r", []), list) else []
 
         tag = rec["tags"][0] if rec["tags"] else metadata.get("docker_tag", "<unknown>")
-        archive_name = Path(rec["path"]).name
+        archive_name = tag if rec.get("tag_only") else Path(rec["path"]).name
 
         if inspection:
             os_name = system.get("os", metadata.get("os", "unknown"))
@@ -517,8 +570,17 @@ class BaseTab(tk.Frame):
                 f"Inspection: {inspected_at or 'cached'}"
             )
             self._populate_inventory_tree(inspection)
-            self._publish_runtime_inspection(rec, inspection)
-            self._publish_builder_inspection(rec, inspection)
+            if rec.get("tag_only"):
+                inventory_key = "base_inventory" if rec.get("role") == "runtime" else "builder_inventory"
+                if self.app.state.get(inventory_key) != inspection:
+                    system_data = inspection.get("system", {}) if isinstance(inspection.get("system", {}), dict) else {}
+                    if rec.get("role") == "runtime":
+                        self.app.state.publish_base(tag=tag, system=system_data, inventory=inspection)
+                    else:
+                        self.app.state.publish_builder(tag=tag, system=system_data, inventory=inspection)
+            else:
+                self._publish_runtime_inspection(rec, inspection)
+                self._publish_builder_inspection(rec, inspection)
             self._update_role_summaries()
         else:
             self.inventory_tree.delete(*self.inventory_tree.get_children())
@@ -771,7 +833,7 @@ fi
                 })
 
             def finish():
-                metadata_now = self._read_sidecar(rec["path"])
+                metadata_now = (dict(rec.get("metadata") or {}) if rec.get("tag_only") else self._read_sidecar(rec["path"]))
                 inspection = metadata_now.get("inspection") if isinstance(metadata_now.get("inspection"), dict) else {}
                 executables = inspection.get("executables") if isinstance(inspection.get("executables"), list) else []
                 by_path = {str(item.get("path", "")): item for item in executables}
@@ -815,14 +877,15 @@ fi
                     }
                 metadata_now["version_probes"] = probes
                 self._apply_persistent_versions(metadata_now, inspection)
-                try:
-                    self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
-                except Exception as e:
-                    self._log(f"WARNING: could not save probed versions: {e}\n")
+                if not rec.get("tag_only"):
+                    try:
+                        self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
+                    except Exception as e:
+                        self._log(f"WARNING: could not save probed versions: {e}\n")
 
                 rec["metadata"] = metadata_now
                 self._show_record_inventory(rec)
-                self._log(f"Saved version probes permanently in: {self._sidecar_path(rec['path'])}\n")
+                self._log(("Version probes saved in project state (save the project JSON to keep them).\n" if rec.get("tag_only") else f"Saved version probes permanently in: {self._sidecar_path(rec['path'])}\n"))
                 summary = (
                     f"Selected executables: {count}\n"
                     f"Runtime versions detected: {detected}\n"
@@ -1001,6 +1064,9 @@ done
 
         image = rec["tags"][0] if rec.get("tags") else metadata.get("docker_tag", "")
         if not image or not self._image_exists(image):
+            if rec.get("tag_only"):
+                messagebox.showerror("Inspect base", f"Docker image is not available locally: {image}\nLoad a saved TAR in Tab 1, or restore the image in Docker Desktop.")
+                return
             if not self._load_archive(rec, "inspection"):
                 return
             image = rec["tags"][0] if rec.get("tags") else ""
@@ -1009,8 +1075,8 @@ done
             return
 
         self.out.delete("1.0", "end")
-        self._log(f"Inspecting base image: {image}\nArchive: {rec['path']}\n\n")
-        self.inventory_summary.set(f"Inspecting {Path(rec['path']).name} ...")
+        self._log(f"Inspecting base image: {image}\nSource: {rec['path'] or 'Docker tag (no TAR required)'}\n\n")
+        self.inventory_summary.set(f"Inspecting {image} ...")
         self.inventory_tree.delete(*self.inventory_tree.get_children())
 
         script = self._inspection_script()
@@ -1040,7 +1106,7 @@ done
                     self.inventory_summary.set("Inspection failed. See the activity log.")
                     return
 
-                metadata_now = self._read_sidecar(rec["path"])
+                metadata_now = (dict(rec.get("metadata") or {}) if rec.get("tag_only") else self._read_sidecar(rec["path"]))
                 probes = self._persistent_version_probes(metadata_now)
                 metadata_now["version_probes"] = probes
                 self._apply_persistent_versions(metadata_now, result)
@@ -1048,10 +1114,11 @@ done
                 metadata_now["os"] = result.get("system", {}).get("os", metadata_now.get("os", ""))
                 metadata_now["architecture"] = result.get("system", {}).get("architecture", metadata_now.get("architecture", ""))
                 metadata_now["inspection"] = result
-                try:
-                    self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
-                except Exception as e:
-                    self._log(f"WARNING: could not update metadata sidecar: {e}\n")
+                if not rec.get("tag_only"):
+                    try:
+                        self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
+                    except Exception as e:
+                        self._log(f"WARNING: could not update metadata sidecar: {e}\n")
 
                 rec["metadata"] = metadata_now
                 self._show_record_inventory(rec)
@@ -1061,8 +1128,8 @@ done
                     f"OS packages: {len(result.get('packages', {}).get('os', []))}\n"
                     f"Python packages: {len(result.get('packages', {}).get('python', []))}\n"
                     f"R packages: {len(result.get('packages', {}).get('r', []))}\n"
-                    f"JAR files indexed: {len(result.get('packages', {}).get('jars', []))}\n"
-                    f"Metadata saved to: {self._sidecar_path(rec['path'])}\n"
+                    f"JAR files indexed: {len(result.get('packages', {}).get('jars', []))}\n" +
+                    ("Inventory saved in project state. Save project JSON to preserve it.\n" if rec.get("tag_only") else f"Metadata saved to: {self._sidecar_path(rec['path'])}\n")
                 )
                 self.refresh_selected_archives()
 
@@ -1073,21 +1140,21 @@ done
     def inspect_selected_base(self):
         rec = self._selected_record()
         if not rec:
-            messagebox.showwarning("Inspect base", "Select a runtime or builder archive in Tab 1.")
+            messagebox.showwarning("Inspect base", "Select a runtime or builder Docker image in Tab 1.")
             return
         self._inspection_record(rec, force=False)
 
     def refresh_selected_inventory(self):
         rec = self._selected_record()
         if not rec:
-            messagebox.showwarning("Inspect base", "Select a runtime or builder archive in Tab 1.")
+            messagebox.showwarning("Inspect base", "Select a runtime or builder Docker image in Tab 1.")
             return
         self._inspection_record(rec, force=True)
 
     def show_full_package_list(self):
         rec = self._selected_record()
         if not rec:
-            messagebox.showwarning("Package list", "Select a runtime or builder archive in Tab 1.")
+            messagebox.showwarning("Package list", "Select a runtime or builder Docker image in Tab 1.")
             return
 
         metadata = rec.get("metadata") or self._read_sidecar(rec["path"])
@@ -1098,14 +1165,15 @@ done
                 self._inspection_record(rec, force=True)
             return
 
+        label = rec["tags"][0] if rec.get("tag_only") else Path(rec["path"]).name
         win = tk.Toplevel(self)
-        win.title(f"Full software inventory — {Path(rec['path']).name}")
+        win.title(f"Full software inventory — {label}")
         win.geometry("1050x760")
         win.configure(bg="#EAF2F8")
 
         tk.Label(
             win,
-            text=f"Full software inventory — {Path(rec['path']).name}",
+            text=f"Full software inventory — {label}",
             bg="#117864",
             fg="white",
             font=("Segoe UI", 13, "bold"),
@@ -1154,7 +1222,7 @@ done
                 parent=win,
                 defaultextension=".txt",
                 filetypes=[("Text report", "*.txt")],
-                initialfile=Path(rec["path"]).stem + "_full_inventory.txt",
+                initialfile=re.sub(r"[^A-Za-z0-9_.-]", "_", label) + "_full_inventory.txt",
             )
             if target:
                 Path(target).write_text(report, encoding="utf-8")
@@ -1168,8 +1236,10 @@ done
 
         runtime_path = str(self.app.state.get("runtime_base_archive", "") or "").strip()
         builder_path = str(self.app.state.get("builder_base_archive", "") or "").strip()
-        self.runtime_display.set(runtime_path or "(not selected — choose in Tab 1)")
-        self.builder_display.set(builder_path or "(same as runtime — set in Tab 1)")
+        selected_runtime_tag = str(self.app.state.get("base_image", "") or "").strip()
+        selected_builder_tag = str(self.app.state.get("builder_image", "") or "").strip()
+        self.runtime_display.set(runtime_path or ("Docker tag only: " + selected_runtime_tag if selected_runtime_tag else "(not selected — choose in Tab 1)"))
+        self.builder_display.set(builder_path or ("Docker tag only: " + selected_builder_tag if selected_builder_tag else "(same as runtime)"))
 
         records = []
         missing = []
@@ -1193,11 +1263,19 @@ done
 
         runtime_rec = self._runtime_record()
         builder_rec = self._builder_record()
-        if runtime_rec:
+        if runtime_rec and not runtime_rec.get("tag_only"):
             self._apply_runtime_record(runtime_rec)
         else:
-            self.runtime_tag.set(str(self.app.state.get("base_image", "") or ""))
-            self.runtime_status.config(text="ARCHIVE MISSING" if runtime_path else "NOT SELECTED", fg="#922B21")
+            runtime_tag = str(self.app.state.get("base_image", "") or "")
+            self.runtime_tag.set(runtime_tag)
+            if runtime_path:
+                self.runtime_status.config(text="ARCHIVE MISSING", fg="#922B21")
+            elif runtime_tag:
+                exists = self._image_exists(runtime_tag)
+                self.runtime_status.config(text="Docker tag — LOADED" if exists else "Docker tag — NOT LOADED",
+                                           fg="#1E8449" if exists else "#B9770E")
+            else:
+                self.runtime_status.config(text="NOT SELECTED", fg="#922B21")
         if builder_path:
             if builder_rec:
                 self._apply_builder_record(builder_rec)
@@ -1207,19 +1285,20 @@ done
         else:
             builder = effective_builder_image(self.app.state)
             self.builder_tag.set(builder)
+            label = 'Separate builder Docker tag' if self.app.state.get('builder_image') else 'Same as runtime'
             if builder and self._image_exists(builder):
-                self.builder_status.config(text="Same as runtime — LOADED", fg="#1E8449")
+                self.builder_status.config(text=label + ' — LOADED', fg="#1E8449")
             elif builder:
-                self.builder_status.config(text="Same as runtime — external only", fg="#B9770E")
+                self.builder_status.config(text=label + ' — NOT LOADED', fg="#B9770E")
             else:
-                self.builder_status.config(text="Same as runtime", fg="#566573")
+                self.builder_status.config(text=label, fg="#566573")
 
         shown = self._selected_record()
         if shown:
             self._show_record_inventory(shown)
         else:
             self.inventory_tree.delete(*self.inventory_tree.get_children())
-            self.inventory_summary.set("No selected base archive is available. Choose archives in Tab 1.")
+            self.inventory_summary.set("No selected Docker image is available. Select a runtime or builder in Tab 1.")
         self._update_role_summaries()
         for role, path in missing:
             self._log(f"WARNING: {role} archive chosen in Tab 1 cannot be found: {path}\n")
@@ -1363,12 +1442,17 @@ done
     def load_selected_bases(self):
         runtime_path = str(self.app.state.get("runtime_base_archive", "") or "").strip()
         builder_path = str(self.app.state.get("builder_base_archive", "") or "").strip()
-        if not runtime_path:
-            messagebox.showerror("Runtime archive", "Choose the runtime archive in Tab 1 first.")
-            return
-        runtime_rec = self._find_record_by_path(runtime_path)
-        if not self._load_archive(runtime_rec, "runtime"):
-            return
+        if runtime_path:
+            runtime_rec = self._find_record_by_path(runtime_path)
+            if not self._load_archive(runtime_rec, "runtime"):
+                return
+        else:
+            runtime_tag = str(self.app.state.get('base_image') or '').strip()
+            if not runtime_tag or not self._image_exists(runtime_tag):
+                messagebox.showerror('Runtime image', 'Choose a runtime archive in Tab 1 or select a Docker runtime image that is already loaded.')
+                return
+            self.runtime_tag.set(runtime_tag)
+            self.runtime_status.config(text='Docker tag — LOADED', fg='#1E8449')
         if builder_path:
             builder_rec = self._find_record_by_path(builder_path)
             if not self._load_archive(builder_rec, "builder"):
@@ -1376,7 +1460,11 @@ done
         else:
             builder = effective_builder_image(self.app.state)
             self.builder_tag.set(builder)
-            self.builder_status.config(text="Same as runtime — LOADED" if builder else "Same as runtime", fg="#1E8449" if builder else "#566573")
+            separate = bool(self.app.state.get('builder_image'))
+            exists = bool(builder and self._image_exists(builder))
+            self.builder_status.config(text=('Separate builder Docker tag' if separate else 'Same as runtime') +
+                                       (' — LOADED' if exists else ' — NOT LOADED'),
+                                       fg='#1E8449' if exists else '#B9770E')
         self._sync_prepare_to_state()
 
     def unload_gui_images(self):

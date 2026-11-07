@@ -155,6 +155,11 @@ class RuntimeTab(tk.Frame):
         detail_frame.columnconfigure(0, weight=1)
         detail_frame.rowconfigure(0, weight=1)
 
+        log_header = tk.Frame(self, bg='#FDEDEC')
+        log_header.pack(fill='x', padx=12)
+        tk.Label(log_header, text='Dependency inspection log', bg='#FDEDEC').pack(side='left')
+        tk.Button(log_header, text='Clear log', bg='#D6DBDF',
+                  command=lambda: self.out.delete('1.0', 'end')).pack(side='right')
         self.out = tk.Text(self, height=6, bg='white', font=('Consolas', 9), wrap='word')
         self.out.pack(fill='x', padx=12, pady=(0, 8))
         tk.Label(self, text='Static ELF binaries have no shared libraries. JARs are checked for minimum Java versions. Native checks inspect actual files in the selected runtime. A requested OS package is INSTALLED only when detected in that image.',

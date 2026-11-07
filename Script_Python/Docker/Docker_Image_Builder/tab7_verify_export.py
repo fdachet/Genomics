@@ -79,6 +79,10 @@ class ValidationTab(tk.Frame):
         self.tree.tag_configure('fail', foreground='#922B21')
         self.tree.tag_configure('warn', foreground='#9C640C')
         self.tree.bind('<Double-1>', lambda event: self.edit_selected())
+        log_controls = tk.Frame(self)
+        log_controls.pack(fill='x', padx=12)
+        tk.Label(log_controls, text='Verification log').pack(side='left')
+        tk.Button(log_controls, text='Clear log', bg='#D6DBDF', command=lambda: self.out.delete('1.0', 'end')).pack(side='right')
         self.out = tk.Text(self, bg='white', font=('Consolas', 9), height=10, wrap='none')
         self.out.pack(fill='both', expand=False, padx=12, pady=(2, 12))
         self.refresh_from_project_state()
@@ -143,7 +147,10 @@ class ValidationTab(tk.Frame):
         if image:
             self.image.set(image)
         report = self.app.state.get('last_build_report') or {}
-        quality = '    |    Build: ' + report.get('quality', 'UNVERIFIED') + '    |    Warnings: ' + str(len(report.get('issues', []))) if report.get('image') == image else ''
+        label = report.get('quality', 'UNVERIFIED')
+        if report.get('docker_exit_code') == 0 and label == 'INCOMPLETE':
+            label = 'BUILT WITH WARNINGS'
+        quality = '    |    Build: ' + label + '    |    Warnings: ' + str(len(report.get('issues', []))) if report.get('image') == image else ''
         self.shared_summary.set('Image: ' + (image or '<not built>') + quality + '    |    Runtime: ' +
                                 str(self.app.state.get('base_image', '') or '<not selected>') +
                                 '\nExport folder: ' + str(self.app.state.get('export_image_dir', '') or '<not selected>'))

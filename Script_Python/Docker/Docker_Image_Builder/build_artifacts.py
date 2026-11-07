@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from component_output_detector import detect_compiled_output, normalized_relative
 from project_state import effective_builder_image
+from source_archive import SourceArchive, is_source_archive
 
 SKIP_DIRS = {'.git', '.hg', '.svn', '__pycache__', '.venv', 'venv', '.docker_component_builder', '_compiled_artifacts'}
 
@@ -38,8 +39,8 @@ def artifact_dir(state, name):
 
 def fingerprint(component, builder, project_dir=''):
     source = source_path(component, project_dir)
-    if not source or not source.is_dir():
-        raise ValueError('Source folder is missing: ' + str(source))
+    if not source or not (source.is_dir() or source.is_file() and is_source_archive(source)):
+        raise ValueError('Source folder or archive is missing: ' + str(source))
     output_rel = normalized_relative(component.get('output_rel', ''))
     if not output_rel:
         raise ValueError('Compiled output must be identified in Tab 4.')
@@ -47,6 +48,11 @@ def fingerprint(component, builder, project_dir=''):
     settings = {key: component.get(key, '') for key in ('name', 'source', 'build_system', 'build_command', 'build_deps', 'output_rel')}
     settings['builder'] = builder
     digest.update(json.dumps(settings, sort_keys=True).encode('utf-8'))
+    if source.is_file():
+        with source.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                digest.update(block)
+        return digest.hexdigest()
     count = 0
     for file in sorted(source.rglob('*')):
         relative = file.relative_to(source)
@@ -103,8 +109,8 @@ def read_record(state, component, validate=True):
 def prepare_workspace(state, component):
     root = root_path(state)
     source = source_path(component, str(state.get('project_dir', '') or ''))
-    if not source or not source.is_dir():
-        raise ValueError('Source directory missing. Configure in Tab 3.')
+    if not source or not (source.is_dir() or source.is_file() and is_source_archive(source)):
+        raise ValueError('Source directory or ZIP/TAR archive missing. Configure in Tab 3.')
     destination = artifact_dir(state, component.get('name', ''))
     if destination == source or source in destination.parents or destination in source.parents:
         raise ValueError('Source and compilation staging directories must not contain one another.')
@@ -131,7 +137,11 @@ def prepare_workspace(state, component):
         if current.resolve() == source and output_rel and '/' not in output_rel:
             result.add(output_rel)
         return result
-    shutil.copytree(source, work, ignore=ignore, symlinks=False)
+    if source.is_file():
+        work.mkdir(parents=True, exist_ok=True)
+        SourceArchive(source).write_normalized_tar(work / '.source.tar')
+    else:
+        shutil.copytree(source, work, ignore=ignore, symlinks=False)
     if output_rel:
         old = work.joinpath(*output_rel.split('/'))
         if old.is_file():

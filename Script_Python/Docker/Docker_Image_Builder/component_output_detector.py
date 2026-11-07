@@ -7,6 +7,7 @@
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 import re
+from source_archive import SourceArchive, archive_stem, is_source_archive
 
 
 SKIP_DIRS = {
@@ -154,6 +155,8 @@ def _makefile_target_candidates(source):
         path = normalized_relative(target)
         if not path or target.lower() in IGNORE_TARGETS or target in phony:
             return False
+        if (source / path).is_dir():
+            return False
         if Path(path).suffix.lower() in NON_OUTPUT_SUFFIXES:
             return False
         if target.startswith('.') or '/' in target and target.endswith('/'):
@@ -195,7 +198,35 @@ def build_target_names(component_name, source_folder):
         without_version = re.split(r'(?=[\s_-]v?\d)', name, maxsplit=1)[0].strip(' _-')
         if without_version:
             names.append(without_version.casefold())
+        bare_version = re.sub(r'[-_. ]?v?\d+(?:\.\d+)+(?:[A-Za-z]\d*)?$', '', name, flags=re.I).strip(' _-.')
+        if bare_version:
+            names.append(bare_version.casefold())
     return set(names)
+
+
+def _conventional_output_hint(source, component_name):
+    names = build_target_names(component_name, source)
+    if not any((source / name).is_file() for name in
+               ('Makefile', 'makefile', 'GNUmakefile', 'CMakeLists.txt', 'configure')):
+        return OutputDetection()
+    for folder in ('bin', 'build/bin', 'build'):
+        directory = source / folder
+        if not directory.is_dir():
+            continue
+        matches = []
+        for name in sorted(names, key=lambda value: (bool(re.search(r'\d+\.\d+', value)), len(value), value)):
+            if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_.+-]*', name):
+                continue
+            relative = f'{folder}/{name}'
+            file = source / relative
+            if file.is_file() and _is_elf_or_script(file):
+                return OutputDetection(relative, 'Executable found in the conventional build output directory.', True)
+            if not file.exists():
+                matches.append(relative)
+        if matches:
+            return OutputDetection(matches[0],
+                                   'Suggested from the component name and build output directory; verify after compilation.')
+    return OutputDetection()
 
 
 def detect_compiled_output(source_folder, build_system='', component_name=''):
@@ -206,6 +237,31 @@ def detect_compiled_output(source_folder, build_system='', component_name=''):
 
 
     source = Path(source_folder)
+    if source.is_file() and is_source_archive(source):
+        archive = SourceArchive(source)
+        names = build_target_names(component_name or archive_stem(source), archive_stem(source))
+        candidate_names = sorted((name for name in names if re.fullmatch(r'[A-Za-z][A-Za-z0-9_.+-]*', name)),
+                                 key=lambda name: (len(name), name))
+        for folder in ('', 'source', 'src'):
+            makefile = next((f'{folder}/{name}' if folder else name for name in ('GNUmakefile', 'Makefile', 'makefile')
+                             if archive.has(f'{folder}/{name}' if folder else name)), '')
+            if not makefile:
+                continue
+            content = archive.read_text(makefile, max_bytes=1024 * 1024)
+            for candidate in candidate_names:
+                matches = re.findall(r'^([^\t\n:#=]+?)\s*:(?![=])', content, re.M)
+                exact = next((target.strip() for target in matches if target.strip().casefold() == candidate.casefold()), '')
+                if exact:
+                    return OutputDetection(f'{folder}/{exact}' if folder else exact,
+                                           'Suggested from the archived Makefile target; verify after compilation.')
+        for candidate in candidate_names:
+            for folder in ('bin', 'source', 'src'):
+                if any(name.startswith(folder + '/') for name in archive.file_names):
+                    if folder == 'bin':
+                        return OutputDetection('bin/' + candidate,
+                                               'Suggested from the archived source name and bin directory; verify after compilation.')
+            return OutputDetection(candidate, 'Suggested from the archived source name; verify after compilation.')
+        return OutputDetection(message='Source archive opened. Specify the relative executable output after compilation.')
     if not source.is_dir():
         return OutputDetection(message='Source directory does not exist.')
 
@@ -242,6 +298,9 @@ def detect_compiled_output(source_folder, build_system='', component_name=''):
     if len(cmake) > 1:
         return OutputDetection(message='CMake declares multiple executables; choose one.',
                                ambiguous=True, candidates=tuple(cmake))
+    hint = _conventional_output_hint(source, component_name)
+    if hint.path:
+        return hint
     if len(outputs) == 1:
         return OutputDetection(outputs[0], 'Found one ELF executable or shebang script in source tree.', True)
     if len(outputs) > 1:

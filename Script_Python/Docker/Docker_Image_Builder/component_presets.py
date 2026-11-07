@@ -5,6 +5,7 @@ import posixpath
 import re
 import shlex
 from component_output_detector import _makefile_target_candidates, build_target_names
+from source_archive import SourceArchive, is_source_archive
 
 BUILD_COMMANDS = {
     "Make": "make",
@@ -32,12 +33,13 @@ COMMON_BUILD_COMMANDS = (
 
 DETECTORS = (
     ("gradlew", "Gradle"), ("mvnw", "Maven"),
-    ("CMakeLists.txt", "CMake"), ("meson.build", "Meson"),
+    ("CMakeLists.txt", "CMake"),
     ("pom.xml", "Maven"), ("build.gradle", "Gradle"),
     ("build.gradle.kts", "Gradle"), ("Cargo.toml", "Cargo"),
-    ("go.mod", "Go"), ("configure", "Configure/Make"),
-    ("configure.ac", "Autotools"), ("Makefile", "Make"),
+    ("go.mod", "Go"), ("Makefile", "Make"),
     ("makefile", "Make"), ("GNUmakefile", "Make"),
+    ("configure", "Configure/Make"), ("configure.ac", "Autotools"),
+    ("meson.build", "Meson"),
     ("pyproject.toml", "Python"), ("setup.py", "Python"),
     ("DESCRIPTION", "R package"), ("build.ninja", "Ninja"),
 )
@@ -54,14 +56,16 @@ def preferred_make_target(directory, component_name='', source_folder=''):
 
 def detect_build_system(path, component_name=''):
     directory = Path(str(path).strip())
-    if not directory.is_dir():
+    archive = SourceArchive(directory) if directory.is_file() and is_source_archive(directory) else None
+    if not directory.is_dir() and archive is None:
         return "", ""
     for relative in ('', 'source', 'src'):
         work = directory / relative if relative else directory
-        if not work.is_dir():
+        if archive is None and not work.is_dir():
             continue
         for marker, system in DETECTORS:
-            if not (work / marker).is_file():
+            entry_name = f'{relative}/{marker}' if relative else marker
+            if not (archive.has(entry_name) if archive is not None else (work / marker).is_file()):
                 continue
             command = BUILD_COMMANDS[system]
             if marker == 'gradlew':
@@ -69,7 +73,7 @@ def detect_build_system(path, component_name=''):
             elif marker == 'mvnw':
                 command = './mvnw package'
             elif system == 'Make':
-                target = preferred_make_target(work, component_name, directory)
+                target = preferred_make_target(work, component_name, directory) if archive is None else ''
                 command = 'make' + (f' -C {shlex.quote(relative)}' if relative else '')
                 if target:
                     command += ' ' + shlex.quote(target)

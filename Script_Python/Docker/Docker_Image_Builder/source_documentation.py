@@ -5,6 +5,7 @@ import sys
 import tkinter as tk
 from pathlib import Path
 from tkinter import messagebox, scrolledtext
+from source_archive import ArchiveDocument, SourceArchive, is_source_archive
 
 
 DOCUMENT_FOLDERS = ('', 'source', 'src', 'doc', 'docs')
@@ -16,6 +17,17 @@ BUILD_HEADINGS = ('compiling from source', 'compilation', 'compile', 'building f
 
 def discover_build_documentation(source_folder):
     source = Path(str(source_folder or '').strip())
+    if source.is_file() and is_source_archive(source):
+        contents = SourceArchive(source)
+        files = {name.casefold(): name for name in contents.file_names}
+        documents = []
+        for directory in DOCUMENT_FOLDERS:
+            for name in DOCUMENT_NAMES:
+                relative = f'{directory}/{name}' if directory else name
+                member = files.get(relative.casefold())
+                if member:
+                    documents.append(ArchiveDocument(source, member))
+        return documents
     if not source.is_dir():
         return []
     documents = []
@@ -58,10 +70,11 @@ def build_instruction_line(text):
 
 
 def show_build_documentation(parent, path):
-    path = Path(path)
+    if not isinstance(path, ArchiveDocument):
+        path = Path(path)
     try:
         content = path.read_text(encoding='utf-8-sig', errors='replace')
-    except OSError as exc:
+    except (OSError, ValueError, FileNotFoundError) as exc:
         messagebox.showerror('Source documentation', str(exc), parent=parent)
         return
     window = tk.Toplevel(parent)
@@ -83,6 +96,8 @@ def show_build_documentation(parent, path):
 
 
 def open_build_documentation(path):
+    if isinstance(path, ArchiveDocument):
+        raise ValueError('Archive documentation opens in the internal reader.')
     path = Path(path).resolve()
     if not path.is_file():
         raise FileNotFoundError(str(path))

@@ -1,4 +1,5 @@
 import json
+import re
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -8,6 +9,7 @@ from docker_windows_diagnostics import DockerWindowsDiagnostics
 from network_policy import POLICY_OFFLINE, POLICY_APPROVAL, normalize_policy
 from build_modes import normalize_mode
 from project_state import effective_builder_image
+from docker_image_checkpoint import save_image_checkpoint, load_image_checkpoint
 
 
 class ProjectStateTab(tk.Frame):
@@ -116,13 +118,47 @@ class ProjectStateTab(tk.Frame):
             text=(
                 "The export folder is only the destination for the newly created final Docker image .tar. "
                 "Runtime = filesystem used by the final image. Builder = temporary environment used to compile software. "
-                "Runtime and builder .tar files are selected independently above."
+                "Docker tags identify usable local images. The Save buttons create reusable TAR files; "
+                "local package installation can save the updated base to TAR automatically."
             ),
             bg="#F4F6F7",
             fg="#566573",
             justify="left",
             anchor="w",
         ).grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(7, 2))
+
+        checkpoint_frame = tk.LabelFrame(
+            self, text=" Save / reload the selected Docker image — reusable checkpoint ",
+            bg="#E8F6F3", fg="#117864", font=("Segoe UI", 10, "bold"), padx=10, pady=7,
+        )
+        checkpoint_frame.pack(fill="x", padx=12, pady=(0, 8))
+        checkpoint_buttons = tk.Frame(checkpoint_frame, bg="#E8F6F3")
+        checkpoint_buttons.pack(fill="x")
+        self.checkpoint_buttons = []
+        for caption, mode, role, color in (
+            ("Save runtime image to TAR", "save", "runtime", "#148F77"),
+            ("Save builder image to TAR", "save", "builder", "#148F77"),
+            ("Save last built image to TAR", "save", "built", "#117A65"),
+            ("Load TAR as runtime", "load", "runtime", "#2874A6"),
+            ("Load TAR as builder", "load", "builder", "#2874A6"),
+        ):
+            button = tk.Button(
+                checkpoint_buttons, text=caption, bg=color, fg="white",
+                command=lambda action=mode, selected_role=role: self._checkpoint_action(action, selected_role),
+            )
+            button.pack(side="left", padx=(0, 8), pady=2)
+            self.checkpoint_buttons.append(button)
+        self.checkpoint_both = tk.BooleanVar(value=True)
+        tk.Checkbutton(
+            checkpoint_frame, text="Use the saved/loaded image for BOTH runtime and builder",
+            variable=self.checkpoint_both, bg="#E8F6F3", anchor="w",
+        ).pack(anchor="w", pady=(4, 0))
+        self.checkpoint_status = tk.StringVar(value="Ready. Save the current working image to a .tar file; reload it later to continue adding components.")
+        tk.Label(
+            checkpoint_frame, textvariable=self.checkpoint_status, bg="#E8F6F3",
+            fg="#1B4F72", anchor="w", justify="left", wraplength=1300,
+        ).pack(fill="x", pady=(4, 0))
+        self._checkpoint_busy = False
 
         network_options = tk.LabelFrame(self, text=" Package downloads and build network policy ", bg="#F4F6F7", padx=10, pady=6)
         network_options.pack(fill="x", padx=12, pady=(0, 8))
@@ -168,12 +204,12 @@ class ProjectStateTab(tk.Frame):
         self.tree.column("shared_data", width=900, anchor="w")
         self.tree.pack(fill="both", expand=True, padx=12, pady=(4, 8))
 
-        tk.Label(
-            self,
-            text="Link / validation messages",
-            bg="#F4F6F7",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=12)
+        messages_header = tk.Frame(self, bg="#F4F6F7")
+        messages_header.pack(fill="x", padx=12)
+        tk.Label(messages_header, text="Link / validation messages", bg="#F4F6F7",
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        tk.Button(messages_header, text="Clear log", bg="#D6DBDF",
+                  command=lambda: self.output.delete('1.0', 'end')).pack(side="right")
         self.output = tk.Text(self, height=8, bg="white", font=("Consolas", 9))
         self.output.pack(fill="x", padx=12, pady=(4, 12))
 
@@ -268,6 +304,139 @@ class ProjectStateTab(tk.Frame):
 
     def _state(self):
         return self.app.state
+
+    def _checkpoint_action(self, action, role):
+        if self._checkpoint_busy:
+            return
+        state = self._state()
+        both = bool(self.checkpoint_both.get())
+        if role == "runtime":
+            image = str(state.get("base_image", "") or "").strip()
+        elif role == "builder":
+            image = effective_builder_image(state)
+        else:
+            image = str(state.get("built_image", "") or "").strip()
+        if action == "save":
+            if not image:
+                messagebox.showerror("Save Docker image", f"No {role} image is currently selected.", parent=self)
+                return
+            filename = re.sub(r"[^A-Za-z0-9_.-]", "_", image) + ".tar"
+            chosen = filedialog.asksaveasfilename(
+                parent=self, title=f"Save the working {role} Docker image as a TAR",
+                initialdir=self._initial_directory(state.get("export_image_dir", ""), state.get("project_dir", "")),
+                initialfile=filename, defaultextension=".tar",
+                filetypes=[("Docker image archive", "*.tar")],
+            )
+        else:
+            chosen = filedialog.askopenfilename(
+                parent=self, title=f"Load a saved Docker TAR as {role}",
+                initialdir=self._initial_directory(
+                    state.get("runtime_base_archive" if role == "runtime" else "builder_base_archive", ""),
+                    state.get("export_image_dir", ""), state.get("project_dir", ""),
+                ),
+                filetypes=[("Docker image archive", "*.tar"), ("All files", "*.*")],
+            )
+        if not chosen:
+            return
+        if action == "save":
+            selected_system = state.get("base_system", {}) if role == "runtime" else state.get("builder_system", {})
+            selected_inventory = state.get("base_inventory", {}) if role == "runtime" else state.get("builder_inventory", {})
+            if role == "built":
+                selected_system = {}
+                selected_inventory = {}
+            if role == "builder" and not state.get("builder_image") and not state.get("builder_base_archive"):
+                selected_system = state.get("base_system", {})
+                selected_inventory = state.get("base_inventory", {})
+        else:
+            selected_system = {}
+            selected_inventory = {}
+
+        self._checkpoint_busy = True
+        for button in self.checkpoint_buttons:
+            button.configure(state="disabled")
+        self.checkpoint_status.set("Saving selected image to TAR..." if action == "save" else "Loading saved Docker TAR...")
+        self.output.insert("end", f"{action.title()} {role} Docker image: {chosen}\n")
+        self.output.see("end")
+
+        def worker():
+            def progress(message):
+                try:
+                    self.after(0, lambda line=message: self._checkpoint_log(line))
+                except RuntimeError:
+                    pass
+            try:
+                if action == "save":
+                    result = save_image_checkpoint(
+                        image, chosen, system=selected_system, inventory=selected_inventory, progress=progress,
+                    )
+                else:
+                    result = load_image_checkpoint(chosen, progress=progress)
+                self.after(0, lambda: self._checkpoint_finished(action, role, both, result, ""))
+            except Exception as exc:
+                error = str(exc)
+                try:
+                    self.after(0, lambda: self._checkpoint_finished(action, role, both, None, error))
+                except RuntimeError:
+                    pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _checkpoint_log(self, line):
+        if not self.winfo_exists():
+            return
+        self.output.insert("end", str(line))
+        self.output.see("end")
+
+    def _checkpoint_finished(self, action, role, both, result, error):
+        if not self.winfo_exists():
+            return
+        self._checkpoint_busy = False
+        for button in self.checkpoint_buttons:
+            button.configure(state="normal")
+        if error:
+            self.checkpoint_status.set("FAILED: " + error[:350])
+            self._checkpoint_log("Image checkpoint failed: " + error + "\n")
+            messagebox.showerror("Docker image checkpoint failed", error, parent=self)
+            return
+        state = self._state()
+        tag = result["tag"]
+        archive = result["archive"]
+        changes = {}
+        if action == "load":
+            system = result["system"]
+            inventory = result["inventory"]
+            if not inventory:
+                if state.get("base_image") == tag:
+                    inventory = state.get("base_inventory", {})
+                    system = system or state.get("base_system", {})
+                elif effective_builder_image(state) == tag:
+                    inventory = state.get("builder_inventory", {})
+                    system = system or state.get("builder_system", {})
+            if role == "runtime" or both:
+                changes.update(runtime_base_archive=archive, base_image=tag, base_system=system, base_inventory=inventory)
+            if role == "builder" or both:
+                changes.update(builder_base_archive=archive, builder_image=tag, builder_system=system, builder_inventory=inventory)
+        else:
+            if role == "runtime" or (role == "builder" and both and str(state.get("base_image", "") or "") == tag):
+                changes["runtime_base_archive"] = archive
+            if role == "builder" or (role == "runtime" and both and effective_builder_image(state) == tag):
+                changes["builder_base_archive"] = archive
+                changes["builder_image"] = tag
+                if not state.get("builder_inventory") and str(state.get("base_image", "") or "") == tag:
+                    changes["builder_inventory"] = state.get("base_inventory", {})
+                    changes["builder_system"] = state.get("base_system", {})
+        if changes:
+            state.update(changes)
+        verb = "saved" if action == "save" else "loaded"
+        self.checkpoint_status.set(f"Image {verb}: {tag}  |  TAR: {archive}")
+        self._checkpoint_log(f"Image {verb} successfully: {tag}\nTAR: {archive}\n")
+        self.refresh_from_project_state()
+        messagebox.showinfo(
+            "Docker image checkpoint",
+            f"Working image {verb} successfully.\n\nDocker tag: {tag}\nTAR: {archive}\n\n"
+            "You can now continue adding components. Save your project JSON separately to preserve the component list.",
+            parent=self,
+        )
 
     def browse_project_directory(self):
         state = self._state()
@@ -483,9 +652,9 @@ class ProjectStateTab(tk.Frame):
         values = {
             "project_dir": state.get("project_dir", ""),
             "export_image_dir": state.get("export_image_dir", ""),
-            "runtime_base_archive": state.get("runtime_base_archive", ""),
+            "runtime_base_archive": state.get("runtime_base_archive", "") or ("(Runtime image in Docker Desktop; click Save runtime image to TAR)" if state.get("base_image") else ""),
             "base_image": state.get("base_image", ""),
-            "builder_base_archive": state.get("builder_base_archive", "") or "(same as runtime)",
+            "builder_base_archive": state.get("builder_base_archive", "") or ("(Builder image in Docker Desktop; click Save builder image to TAR)" if explicit_builder else "(same as runtime)"),
             "builder_image": effective_builder_image(state) or "(same as runtime)",
             "base_os": system.get("os", ""),
             "base_arch": system.get("architecture", ""),
@@ -546,7 +715,7 @@ class ProjectStateTab(tk.Frame):
         if not state.get("base_image"):
             messages.append("MISSING: no runtime base Docker tag has been published by Tab 2.")
         if state.get("base_image") and not state.get("runtime_base_archive"):
-            messages.append("WARNING: runtime Docker tag exists but no external runtime archive is recorded.")
+            messages.append("INFO: runtime is selected by Docker tag; no external TAR archive is recorded. The image can be used directly if it exists in Docker Desktop.")
 
         inventory = state.get("base_inventory", {})
         if state.get("base_image") and not isinstance(inventory, dict):

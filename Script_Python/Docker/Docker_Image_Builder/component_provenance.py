@@ -197,6 +197,8 @@ def make_build_provenance(state, image, manifest, skipped, pending, mode, instal
                not any(str(x.get('path', '')).startswith(directory) for directory in removed_directories)]
     preserved = {str(item.get('path', '')): i for i, item in enumerate(records) if item.get('path')}
     added = []
+    source_by_name = {str(component.get('name', '')): component for component in state.get('components', [])
+                      if isinstance(component, dict) and str(component.get('kind', '')).lower() == 'source'}
     for row in manifest:
         source = str(row.get('source_kind', '')).lower()
         new = {'name': str(row.get('name', '')), 'type': str(row.get('kind', '')),
@@ -206,6 +208,16 @@ def make_build_provenance(state, image, manifest, skipped, pending, mode, instal
                'builder_image': str(state.get('builder_image') or state.get('base_image')) if source == 'compiled' else '',
                'source_kind': source, 'status': 'PRESENT_EXPECTED',
                'compiled_signature': row.get('compiled_signature') or ''}
+        if source == 'compiled':
+            component = source_by_name.get(new['name'], {})
+            new['build_command'] = str(component.get('build_command', ''))
+            new['detected_build_tools'] = list(component.get('detected_build_tools') or [])
+            new['builder_tool_status'] = dict(component.get('builder_tool_status') or {})
+            new['builder_tool_details'] = dict(component.get('builder_tool_details') or {})
+            new['builder_package_suggestions'] = list(component.get('suggested_builder_packages') or [])
+            new['build_tool_choices'] = dict(component.get('build_tool_choices') or {})
+            new['manual_required_build_tools'] = list(component.get('manual_required_build_tools') or [])
+            new['manual_build_packages'] = str(component.get('build_deps', ''))
         if new['path'] in preserved:
             records[preserved[new['path']]] = new
         else:

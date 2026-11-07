@@ -24,6 +24,7 @@ from image_component_inventory import inspect_image_components
 from revision_dependencies import dependency_impact, normalize_satisfactions, projected_java_versions
 from image_compaction import show_compaction_dialog
 from local_package_catalog import local_installation_plan, installed_packages
+from docker_image_checkpoint import save_image_checkpoint
 
 
 class BuildTab(tk.Frame):
@@ -65,6 +66,9 @@ class BuildTab(tk.Frame):
         tk.Button(controls, text='Refresh', command=self.refresh_from_project_state, bg='#A9DFBF').pack(side='left', padx=3)
         tk.Button(controls, text='Revise Built Image', command=self.revise_built_image, bg='#AED6F1').pack(side='left', padx=3)
         tk.Button(controls, text='Compact Built Image', command=self.compact_built_image, bg='#F9E79F').pack(side='left', padx=3)
+        self.save_built_tar_button = tk.Button(controls, text='Save Built Image to TAR', command=self.save_built_image_to_tar, bg='#117A65', fg='white')
+        self.save_built_tar_button.pack(side='left', padx=3)
+        tk.Button(controls, text='Clear log', command=lambda: self.out.delete('1.0', 'end'), bg='#D6DBDF').pack(side='left', padx=3)
         self.policy_status = tk.StringVar()
         tk.Label(self, textvariable=self.policy_status, bg='#E9F7EF', anchor='w').pack(fill='x', padx=16)
         tk.Label(self, textvariable=self.status, bg='#E9F7EF', fg='#145A32', font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', padx=16, pady=5)
@@ -88,6 +92,65 @@ class BuildTab(tk.Frame):
         path = filedialog.askdirectory(parent=self)
         if path:
             self.context.set(path)
+
+    def save_built_image_to_tar(self):
+        image = str(self.app.state.get('built_image', '') or '').strip()
+        if not image:
+            messagebox.showerror('Save Docker image', 'Build an image first, or use Tab 1 to save the selected runtime image.', parent=self)
+            return
+        if self._busy:
+            messagebox.showinfo('Save Docker image', 'Wait until the current image build finishes.', parent=self)
+            return
+        folder = str(self.app.state.get('export_image_dir', '') or self.app.state.get('project_dir', '') or '').strip()
+        if not folder or not Path(folder).is_dir():
+            folder = str(Path.cwd())
+        filename = re.sub(r'[^A-Za-z0-9_.-]', '_', image) + '.tar'
+        chosen = filedialog.asksaveasfilename(
+            parent=self, title='Save this already-built Docker image as a reusable TAR',
+            initialdir=folder, initialfile=filename, defaultextension='.tar',
+            filetypes=[('Docker image archive', '*.tar')],
+        )
+        if not chosen:
+            return
+        self.save_built_tar_button.configure(state='disabled')
+        self.out.insert('end', f'Exporting existing image {image} to {chosen}\n')
+        self.out.see('end')
+
+        def worker():
+            def progress(line):
+                try:
+                    self.after(0, lambda message=line: (self.out.insert('end', message), self.out.see('end')))
+                except RuntimeError:
+                    pass
+            try:
+                result = save_image_checkpoint(image, chosen, progress=progress)
+                error = ''
+            except Exception as exc:
+                result = None
+                error = str(exc)
+
+            def finish():
+                if not self.winfo_exists():
+                    return
+                self.save_built_tar_button.configure(state='normal')
+                if error:
+                    self.out.insert('end', 'TAR export failed: ' + error + '\n')
+                    messagebox.showerror('TAR export failed', error, parent=self)
+                else:
+                    self.out.insert('end', 'Saved reusable TAR: ' + result['archive'] + '\n')
+                    messagebox.showinfo(
+                        'Docker image saved',
+                        'Saved the existing image without rebuilding it.\n\n' + result['archive'] +
+                        '\n\nTo reuse it: Tab 1 → Load TAR as runtime (select both roles if appropriate).',
+                        parent=self,
+                    )
+                self.out.see('end')
+            try:
+                self.after(0, finish)
+            except RuntimeError:
+                pass
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _components(self):
         return [c for c in self.app.state.get('components', []) if c.get('enabled', True)]
@@ -811,9 +874,15 @@ class BuildTab(tk.Frame):
                     detail = str(exc)
                     log('BUILD FAILED: ' + detail + '\n')
             issues = list(dict.fromkeys(issues))
-            quality = 'INCOMPLETE' if issues else ('NOT VERIFIED' if mode != STRICT else 'UNVERIFIED')
+            if code == 0 and issues:
+                log('BUILD SUCCEEDED — outstanding warnings:\n')
+                for item in issues:
+                    log('  - ' + item + '\n')
+            quality = ('BUILT WITH WARNINGS' if issues else 'BUILT — VERIFICATION PENDING') if code == 0 else 'BUILD FAILED'
             report = {'image': image, 'base': base, 'mode': mode, 'quality': quality,
                       'issues': issues, 'network': network, 'docker_exit_code': code,
+                      'build_succeeded': code == 0,
+                      'requirements_verified': code == 0 and not bool(issues),
                       'installation_attempted': install_now,
                       'not_installed_os_packages': [x for x in packages if x not in inspection.get('installed', [])] if not install_now else [],
                       'not_installed_language_packages': env['language_packages'] if not install_now else {},
