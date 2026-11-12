@@ -102,8 +102,7 @@ class ProjectStateTab(tk.Frame):
 
         add_field(project_info, 0, "project_dir", "Project directory", self.browse_project_directory)
         add_field(project_info, 1, "export_image_dir", "Final image export folder (.tar)", self.browse_export_image_dir)
-        add_field(project_info, 2, "image_name", "Final image name [automatic]")
-        add_field(project_info, 3, "generated_context", "Generated build context", self.browse_generated_context)
+        add_field(project_info, 2, "generated_context", "Generated build context", self.browse_generated_context)
 
         add_field(runtime_info, 0, "runtime_base_archive", "Runtime Docker TAR [automatic]")
         add_field(runtime_info, 1, "base_image", "Runtime Docker tag [automatic]")
@@ -590,7 +589,6 @@ class ProjectStateTab(tk.Frame):
             "builder_os": builder_system.get("os", ""),
             "builder_arch": builder_system.get("architecture", ""),
             "builder_libc": builder_system.get("glibc", ""),
-            "image_name": state.get("image_name", ""),
             "generated_context": state.get("generated_context", ""),
         }
         for key, value in values.items():

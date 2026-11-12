@@ -17,7 +17,7 @@ from java_runtime_checker import probe_java
 from dependency_planner import plan_runtime_dependencies, evaluate_java_requirement
 from general_environment import package_plan, custom_directives
 from environment_install import language_lines, custom_script_lines
-from build_modes import STRICT, PERMISSIVE, ASSEMBLY, normalize_mode, optional_lines, environment_lines, derive_next_tag
+from build_modes import STRICT, PERMISSIVE, ASSEMBLY, normalize_mode, optional_lines, environment_lines, derive_next_tag, timestamp_image_tag
 from component_provenance import make_build_provenance, parent_provenance
 from manual_installation_overrides import user_confirmed_package
 from image_removals import normalize_removals, remove_deferred_packages, dockerfile_removal_lines
@@ -55,8 +55,9 @@ class BuildTab(tk.Frame):
         form = tk.Frame(self, bg='#E9F7EF')
         form.pack(fill='x', padx=12, pady=8)
         form.columnconfigure(1, weight=1)
-        tk.Label(form, text='Final image name:', bg='#E9F7EF').grid(row=0, column=0, sticky='w', pady=4)
+        tk.Label(form, text='Final image name (editable):', bg='#E9F7EF').grid(row=0, column=0, sticky='w', pady=4)
         tk.Entry(form, textvariable=self.image).grid(row=0, column=1, sticky='ew', padx=8)
+        tk.Button(form, text='Current timestamp', command=self.set_current_timestamp, bg='#D5F5E3').grid(row=0, column=2, padx=4)
         tk.Label(form, text='Build context folder:', bg='#E9F7EF').grid(row=1, column=0, sticky='w', pady=4)
         tk.Entry(form, textvariable=self.context).grid(row=1, column=1, sticky='ew', padx=8)
         controls = tk.Frame(self, bg='#E9F7EF')
@@ -84,6 +85,13 @@ class BuildTab(tk.Frame):
         output_frame.rowconfigure(0, weight=1)
         self.refresh_from_project_state()
 
+    def set_current_timestamp(self):
+        current = self.image.get().strip()
+        if not current:
+            project = Path(str(self.app.state.get('project_dir') or Path.cwd()))
+            current = re.sub(r'[^a-z0-9_.-]+', '-', project.name.lower()).strip('.-') or 'docker-image'
+        self.image.set(timestamp_image_tag(current))
+
     def _will_install_now(self, mode=None):
         return normalize_mode(mode or self.app.state.get('build_mode')) != ASSEMBLY
 
@@ -103,7 +111,7 @@ class BuildTab(tk.Frame):
         elif not self.image.get().strip():
             project = Path(str(state.get('project_dir') or Path.cwd()))
             suggested = re.sub(r'[^a-z0-9_.-]+', '-', project.name.lower()).strip('.-')
-            self.image.set((suggested or 'docker-image') + ':latest')
+            self.image.set(timestamp_image_tag(suggested or 'docker-image'))
         folder = str(state.get('generated_context', '') or '').strip()
         if folder:
             self.context.set(folder)

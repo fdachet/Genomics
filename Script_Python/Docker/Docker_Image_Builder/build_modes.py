@@ -49,12 +49,27 @@ def environment_lines(lines, mode):
     return output
 
 
+def timestamp_image_tag(image, now=None):
+    from datetime import datetime
+    now = now or datetime.now()
+    image = str(image or '').strip()
+    if not image:
+        image = 'docker-image'
+    repository = image.rsplit(':', 1)[0] if ':' in image and image.rfind(':') > image.rfind('/') else image
+    hour = now.hour % 12 or 12
+    meridiem = 'am' if now.hour < 12 else 'pm'
+    stamp = f'{now:%b}{now.day}_{hour}.{now.minute:02d}{meridiem}'
+    return repository + ':' + stamp
+
+
 def derive_next_tag(image):
     image = str(image or '').strip()
+    candidate = timestamp_image_tag(image)
+    if candidate != image:
+        return candidate
     if ':' in image and image.rfind(':') > image.rfind('/'):
         repo, tag = image.rsplit(':', 1)
-        match = re.fullmatch(r'(.*?)-rev(\d+)', tag)
+        match = re.fullmatch(r'(.*?)(?:_(\d+))?', tag)
         if match:
-            return repo + ':' + match.group(1) + '-rev' + str(int(match.group(2)) + 1)
-        return repo + ':' + tag + '-rev2'
-    return image + ':rev2'
+            return repo + ':' + match.group(1) + '_' + str(int(match.group(2) or 1) + 1)
+    return image + '_2'
