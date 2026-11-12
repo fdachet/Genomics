@@ -11,7 +11,7 @@ import tarfile
 import threading
 import tkinter as tk
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -263,6 +263,16 @@ class InspectionWindow(tk.Toplevel):
         self.image = None
         self.rows = []
         self._run_id = 0
+        self.sort_column = 'layer' if mode == 'history' else 'component'
+        self.sort_descending = False
+        self.action_filter = tk.StringVar(value='All actions')
+        self.period_filter = tk.StringVar(value='All dates')
+        self.date_from = tk.StringVar()
+        self.date_to = tk.StringVar()
+        self.row_limit = tk.StringVar(value='1000')
+        self._filter_job = None
+        self.summary = ''
+        self.view_rows = []
         header = ttk.Frame(self, padding=8)
         header.pack(fill='x')
         ttk.Label(header, text='Docker image TAR:').pack(side='left')
@@ -271,11 +281,30 @@ class InspectionWindow(tk.Toplevel):
         self.run_button = ttk.Button(header, text='Analyze', command=self.start)
         self.run_button.pack(side='left', padx=5)
         ttk.Button(header, text='Export CSV', command=self.export).pack(side='left', padx=5)
-        filterbar = ttk.Frame(self, padding=(8, 0, 8, 6))
+        filterbar = ttk.Frame(self, padding=(8, 0, 8, 5))
         filterbar.pack(fill='x')
-        ttk.Label(filterbar, text='Filter paths/components, status, commands:').pack(side='left')
-        ttk.Entry(filterbar, textvariable=self.filter).pack(side='left', fill='x', expand=True, padx=8)
-        self.filter.trace_add('write', lambda *args: self.populate())
+        ttk.Label(filterbar, text='Search:').pack(side='left')
+        ttk.Entry(filterbar, textvariable=self.filter).pack(side='left', fill='x', expand=True, padx=(7, 7))
+        ttk.Button(filterbar, text='Clear filters', command=self.clear_filters).pack(side='left')
+        self.filter.trace_add('write', lambda *_: self.schedule_populate())
+        if mode == 'history':
+            controls = ttk.Frame(self, padding=(8, 0, 8, 6))
+            controls.pack(fill='x')
+            ttk.Label(controls, text='Action:').pack(side='left')
+            actions = ttk.Combobox(controls, textvariable=self.action_filter, values=('All actions', 'ADDED', 'MODIFIED', 'REMOVED'), state='readonly', width=13)
+            actions.pack(side='left', padx=(5, 12))
+            ttk.Label(controls, text='Period:').pack(side='left')
+            periods = ttk.Combobox(controls, textvariable=self.period_filter, values=('All dates', 'Last 1 day', 'Last 1 week', 'Last 1 month', 'Last 1 year', 'Custom range'), state='readonly', width=16)
+            periods.pack(side='left', padx=(5, 12))
+            ttk.Label(controls, text='From:').pack(side='left')
+            ttk.Entry(controls, textvariable=self.date_from, width=12).pack(side='left', padx=(5, 5))
+            ttk.Label(controls, text='To:').pack(side='left')
+            ttk.Entry(controls, textvariable=self.date_to, width=12).pack(side='left', padx=(5, 12))
+            ttk.Label(controls, text='Max rows:').pack(side='left')
+            ttk.Combobox(controls, textvariable=self.row_limit, values=('100', '500', '1000', '2000', '5000', '10000', '25000', 'All'), width=8).pack(side='left', padx=(5, 0))
+            for variable in (self.action_filter, self.period_filter, self.date_from, self.date_to, self.row_limit):
+                variable.trace_add('write', lambda *_: self.schedule_populate())
+            ttk.Label(self, text='Dates: YYYY-MM-DD (inclusive). Relative periods use the current date, not the image creation date. Missing layer dates are excluded by date filters.', padding=(10, 0, 8, 2)).pack(fill='x')
         columns = ('layer', 'created', 'action', 'path', 'size', 'previous_layer', 'command', 'file_mtime') if mode == 'history' else ('component', 'kind', 'requirement', 'status', 'location', 'evidence')
         tableframe = ttk.Frame(self, padding=8)
         tableframe.pack(fill='both', expand=True)
@@ -285,13 +314,21 @@ class InspectionWindow(tk.Toplevel):
                   'component': 180, 'kind': 150, 'requirement': 290, 'status': 110,
                   'location': 340, 'evidence': 330}
         for key in columns:
-            self.table.heading(key, text=key.replace('_', ' ').title())
+            self.table.heading(key, text=key.replace('_', ' ').title(), command=lambda column=key: self.change_sort(column))
             self.table.column(key, width=widths.get(key, 150), anchor='w')
         self.table.pack(side='left', fill='both', expand=True)
         sb = ttk.Scrollbar(tableframe, orient='vertical', command=self.table.yview)
         sb.pack(side='right', fill='y')
         self.table.configure(yscrollcommand=sb.set)
+        self.table.tag_configure('ADDED', background='#e4f4e8', foreground='#18572b')
+        self.table.tag_configure('REMOVED', background='#ffe5e5', foreground='#8f2424')
+        self.table.tag_configure('MODIFIED', background='#fff1ce', foreground='#785400')
+        self.table.tag_configure('PRESENT', background='#e4f4e8', foreground='#18572b')
+        self.table.tag_configure('MISSING', background='#ffe5e5', foreground='#8f2424')
+        self.table.tag_configure('INCOMPATIBLE', background='#ffe5e5', foreground='#8f2424')
+        self.table.tag_configure('UNRESOLVED', background='#fff1ce', foreground='#785400')
         self.columns = columns
+        self.refresh_headings()
         ttk.Label(self, textvariable=self.status, padding=8, wraplength=1160).pack(fill='x')
         if mode == 'history':
             ttk.Label(self, text='History dates come from image configuration; file mtime is NOT an installation date. Layers have no guaranteed timestamps. Deleted/replaced files are inferred from whiteouts and layer order. Docker-save history may not map to individual build commands after image squashing.', padding=(8, 0, 8, 8), wraplength=1150).pack(fill='x')
@@ -337,21 +374,127 @@ class InspectionWindow(tk.Toplevel):
             self.status.set(f'{len(rows)} discovered dependencies | ' + ' | '.join(f'{k}: {v}' for k, v in sorted(counts.items())) + ' | Note: missing paths and dynamic code require functional validation')
         self.populate()
 
-    def populate(self):
+    def clear_filters(self):
+        self.filter.set('')
+        self.action_filter.set('All actions')
+        self.period_filter.set('All dates')
+        self.date_from.set('')
+        self.date_to.set('')
+        self.row_limit.set('1000')
+        self.schedule_populate()
+
+    def schedule_populate(self):
         if not hasattr(self, 'table'):
             return
-        self.table.delete(*self.table.get_children())
+        if self._filter_job is not None:
+            self.after_cancel(self._filter_job)
+        self._filter_job = self.after(180, self.populate)
+
+    def refresh_headings(self):
+        if not hasattr(self, 'table'):
+            return
+        for key in self.columns:
+            arrow = (' ▼' if self.sort_descending else ' ▲') if key == self.sort_column else ''
+            self.table.heading(key, text=key.replace('_', ' ').title() + arrow)
+
+    def change_sort(self, column):
+        if self.sort_column == column:
+            self.sort_descending = not self.sort_descending
+        else:
+            self.sort_column = column
+            self.sort_descending = False
+        self.refresh_headings()
+        self.schedule_populate()
+
+    @staticmethod
+    def parse_date(value):
+        value = str(value or '').strip()
+        if not value or value.upper() == 'UNKNOWN':
+            return None
+        try:
+            dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt.astimezone(timezone.utc)
+        except (ValueError, OverflowError):
+            return None
+
+    @staticmethod
+    def parse_day(value):
+        return datetime.strptime(value.strip(), '%Y-%m-%d').date()
+
+    def date_bounds(self):
+        if self.mode != 'history':
+            return None, None
+        period = self.period_filter.get()
+        current = datetime.now(timezone.utc)
+        if period.startswith('Last '):
+            days = {'Last 1 day': 1, 'Last 1 week': 7, 'Last 1 month': 30, 'Last 1 year': 365}[period]
+            return current - timedelta(days=days), current
+        if period == 'Custom range':
+            first = self.parse_day(self.date_from.get()) if self.date_from.get().strip() else None
+            last = self.parse_day(self.date_to.get()) if self.date_to.get().strip() else None
+            if first and last and first > last:
+                raise ValueError('From date must be on or before To date.')
+            start = datetime.combine(first, datetime.min.time(), timezone.utc) if first else None
+            finish = datetime.combine(last + timedelta(days=1), datetime.min.time(), timezone.utc) if last else None
+            return start, finish
+        return None, None
+
+    def sort_key(self, row):
+        key = self.sort_column
+        value = row.get(key, '')
+        if key in ('layer', 'previous_layer', 'size'):
+            try:
+                return (0, int(value))
+            except (ValueError, TypeError):
+                return (1, 0)
+        if key in ('created', 'file_mtime'):
+            dt = self.parse_date(value)
+            return (0, dt.timestamp()) if dt else (1, 0)
+        return (0, str(value).casefold())
+
+    def populate(self):
+        self._filter_job = None
+        if not hasattr(self, 'table'):
+            return
         term = self.filter.get().casefold().strip()
-        count = 0
+        try:
+            from_date, to_date = self.date_bounds()
+            limit_string = self.row_limit.get().strip()
+            limit = None if self.mode != 'history' or limit_string.lower() == 'all' else int(limit_string)
+            if limit is not None and not 1 <= limit <= 100000:
+                raise ValueError('Max rows must be between 1 and 100,000, or All.')
+        except ValueError as exc:
+            self.status.set('Invalid filter: ' + str(exc) + ' Use YYYY-MM-DD for dates.')
+            return
+        action = self.action_filter.get()
+        matched = []
         for row in self.rows:
             if term and term not in ' '.join(map(str, row.values())).casefold():
                 continue
-            self.table.insert('', 'end', values=[row.get(key, '') for key in self.columns])
-            count += 1
-            if count >= 12000:
-                break
-        if count >= 12000:
-            self.status.set('Showing first 12,000 matching rows for GUI responsiveness. Export CSV for the complete history.')
+            if self.mode == 'history':
+                if action != 'All actions' and row.get('action') != action:
+                    continue
+                if from_date is not None or to_date is not None:
+                    created = self.parse_date(row.get('created'))
+                    if created is None:
+                        continue
+                    if from_date is not None and created < from_date:
+                        continue
+                    if to_date is not None and (created > to_date if self.period_filter.get() != 'Custom range' else created >= to_date):
+                        continue
+            matched.append(row)
+        matched.sort(key=self.sort_key, reverse=self.sort_descending)
+        self.view_rows = matched
+        shown = matched if limit is None else matched[:limit]
+        children = self.table.get_children()
+        if children:
+            self.table.delete(*children)
+        for row in shown:
+            tag = row.get('action', '') if self.mode == 'history' else row.get('status', '')
+            self.table.insert('', 'end', values=[row.get(key, '') for key in self.columns], tags=(tag,))
+        self.status.set(f'{len(shown):,} displayed | {len(matched):,} matching | {len(self.rows):,} total events. CSV export includes all {len(self.rows):,} events, regardless of filters or row limit.')
 
     def export(self):
         if not self.rows:
