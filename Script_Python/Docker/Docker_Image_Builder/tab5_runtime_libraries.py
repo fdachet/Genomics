@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+import fnmatch
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -13,11 +14,15 @@ from java_runtime_checker import minimum_java_version, probe_java
 from dependency_planner import plan_runtime_dependencies, evaluate_java_requirement, java_package, identify_runtime_family
 from image_component_inventory import inspect_image_components
 from local_package_catalog import installed_java_versions, component_package_identity
-from general_environment import package_plan
+from general_environment import package_plan, runtime_language_report
+from environment_editor import EnvironmentEditor
 from manual_installation_overrides import ManualOverrideDialog, compatible_java_override, confirmed_category, records_for_image, user_confirmed_package
 from dependency_resolution_ui import DependencyResolutionDialog
 from revision_dependencies import dependency_impact, projected_java_versions, project_scan_result, removal_matches
 from image_removals import normalize_removals
+from recognized_elements import load_database
+from workflow_toolbar import add_more_menu
+from comprehensive_dependency_analysis import InspectionWindow
 
 
 class RuntimeTab(tk.Frame):
@@ -48,7 +53,7 @@ class RuntimeTab(tk.Frame):
         self.packages = tk.StringVar()
         self.selected_path = tk.StringVar()
 
-        tk.Label(self, text='5 — NATIVE LIBRARIES / JAVA RUNTIME DEPENDENCIES', bg='#922B21', fg='white',
+        tk.Label(self, text='5 — COMPREHENSIVE DEPENDENCY ANALYSIS', bg='#922B21', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
         tk.Label(self, textvariable=self.base_summary, bg='#FADBD8', fg='#78281F',
                  anchor='w', padx=10, pady=7).pack(fill='x', padx=12, pady=(10, 3))
@@ -62,16 +67,22 @@ class RuntimeTab(tk.Frame):
         self.all_button.pack(side='left', padx=3)
         self.one_button = tk.Button(actions, text='Check Selected Component', bg='#EC7063',
                                     command=self.check_selected)
-        self.one_button.pack(side='left', padx=3)
         self.cancel_button = tk.Button(actions, text='Cancel / Reset Scan', bg='#F5B7B1',
                                        command=self.cancel_scan)
         self.cancel_button.pack(side='left', padx=3)
-        tk.Button(actions, text='Show All Library Details', bg='#F5B7B1',
-                  command=self.show_all_details).pack(side='left', padx=3)
-        tk.Button(actions, text='Refresh', bg='#F5B7B1', command=self.refresh_from_project_state).pack(side='left', padx=3)
         tk.Button(actions, text='Add missing to Tab 3', bg='#F7DC6F', command=self.add_missing_component).pack(side='left', padx=3)
-        tk.Button(actions, text='Manually confirm installed', bg='#D4E6F1', command=self.manual_installation).pack(side='left', padx=3)
-        tk.Button(actions, text='Review removals / assign providers', bg='#D4E6F1', command=self.review_dependencies).pack(side='left', padx=3)
+        tk.Button(actions, text='Explain runtime requirements', bg='#AED6F1',
+                  command=self.show_language_requirements).pack(side='left', padx=3)
+        tk.Button(actions, text='All dependency types', bg='#A9DFBF', command=self.open_comprehensive_analyzer).pack(side='left', padx=3)
+        tk.Button(actions, text='Image file history', bg='#AED6F1', command=self.open_image_history).pack(side='left', padx=3)
+        add_more_menu(actions, [
+            ("Check only selected component", self.check_selected),
+            ("Show all library details", self.show_all_details),
+            ("Review removals / assign providers", self.review_dependencies),
+            ("Manually confirm installed", self.manual_installation),
+            ("Edit final-image runtime requirements", self.edit_language_requirements),
+            ("Refresh library status", self.refresh_from_project_state),
+        ], "#FDEDEC")
         tk.Label(actions, textvariable=self.progress, bg='#FDEDEC', fg='#78281F').pack(side='left', padx=12)
 
         totals = tk.Frame(self, bg='#FDEDEC')
@@ -133,12 +144,13 @@ class RuntimeTab(tk.Frame):
                  font=('Segoe UI', 10, 'bold')).pack(anchor='w', padx=14, pady=(0, 3))
         detail_frame = tk.Frame(self, bg='#FDEDEC')
         detail_frame.pack(fill='both', expand=True, padx=12, pady=(0, 6))
-        self.detail = ttk.Treeview(detail_frame, columns=('component', 'library', 'status', 'location', 'category'),
+        self.detail = ttk.Treeview(detail_frame, columns=('component', 'library', 'status', 'location', 'category', 'purpose'),
                                    show='headings', height=12)
         for key, caption, width in (
             ('component', 'Component', 150), ('library', 'Required library / runtime', 230),
             ('status', 'Availability', 105), ('location', 'Location inside runtime image', 610),
             ('category', 'Category', 150),
+            ('purpose', 'Recognized library purpose', 300),
         ):
             self.detail.heading(key, text=caption)
             self.detail.column(key, width=width, anchor='w')
@@ -165,6 +177,21 @@ class RuntimeTab(tk.Frame):
         tk.Label(self, text='Static ELF binaries have no shared libraries. JARs are checked for minimum Java versions. Native checks inspect actual files in the selected runtime. A requested OS package is INSTALLED only when detected in that image.',
                  bg='#FDEDEC', fg='#78281F', anchor='w', wraplength=1450).pack(fill='x', padx=12, pady=(0, 6))
         self.refresh_from_project_state()
+
+    def _analysis_source(self, component):
+        path, reason = self._component_file(component)
+        if path is not None:
+            return str(path)
+        direct = self._source_path(component.get('source', ''))
+        if direct is not None and direct.is_file():
+            return str(direct)
+        return None
+
+    def open_comprehensive_analyzer(self):
+        InspectionWindow(self, self.app, list(self._components()), self._analysis_source, 'dependencies')
+
+    def open_image_history(self):
+        InspectionWindow(self, self.app, [], self._analysis_source, 'history')
 
     def manual_installation(self):
         name = self._selected_name()
@@ -276,6 +303,23 @@ class RuntimeTab(tk.Frame):
             path, reason = self._component_file(component)
             result[name] = (path, reason)
         return result
+
+    def edit_language_requirements(self):
+        editor = EnvironmentEditor(self, self.app.state)
+        editor.bind('<Destroy>', lambda event: self.refresh_from_project_state() if event.widget is editor else None)
+
+    def show_language_requirements(self):
+        window = tk.Toplevel(self)
+        window.title('Explain final-runtime and build-only language requirements')
+        window.geometry('1050x680')
+        window.transient(self.winfo_toplevel())
+        body = tk.Text(window, font=('Consolas', 10), wrap='word')
+        body.pack(fill='both', expand=True, padx=12, pady=12)
+        try:
+            body.insert('1.0', runtime_language_report(self.app.state))
+        except Exception as exc:
+            body.insert('1.0', 'Dependency explanation unavailable: ' + str(exc))
+        body.configure(state='disabled')
 
     def _snapshot_signature(self, files=None):
         files = self._current_files() if files is None else files
@@ -539,20 +583,29 @@ class RuntimeTab(tk.Frame):
             self._all_view = False
         selected = self._selected_name()
         self.detail.delete(*self.detail.get_children())
+        try:
+            known_libraries = [entry for entry in load_database()
+                               if entry['enabled'] and entry['kind'] == 'library']
+        except ValueError:
+            known_libraries = []
         rows = list(self._results) if self._all_view else [selected] if selected in self._files else list(self._results)
         for name in rows:
             result = self._effective_result(name)
             if result.get('status') == 'STATIC':
                 self.detail.insert('', 'end', iid=f'{name}:static',
                                    values=(name, 'No shared libraries required', 'STATIC',
-                                           'Self-contained ELF', 'Native binary'))
+                                           'Self-contained ELF', 'Native binary', ''))
             if result.get('status') in ('ERROR', 'SKIPPED') and not result.get('libraries'):
                 self.detail.insert('', 'end', iid=f'{name}:error',
                                    values=(name, result.get('error', 'Could not analyze'), 'ERROR',
-                                           'Select component for details', 'Scan error'), tags=('missing',))
+                                           'Select component for details', 'Scan error', ''), tags=('missing',))
             for idx, item in enumerate(result.get('libraries', [])):
+                known_purpose = next((entry['purpose'] for entry in known_libraries
+                                      if fnmatch.fnmatchcase(item['name'].lower(),
+                                                            (entry['pattern'] or entry['name']).lower())), '')
                 self.detail.insert('', 'end', iid=f'{name}:{idx}',
-                                   values=(name, item['name'], item['status'], item['path'] or 'NOT FOUND', item['category']),
+                                   values=(name, item['name'], item['status'], item['path'] or 'NOT FOUND',
+                                           item['category'], known_purpose),
                                    tags=('missing' if item['status'] == 'MISSING' else 'found' if item['status'] == 'FOUND' else 'planned' if item['status'] in ('PLANNED', 'USER CONFIRMED') else '',))
         if selected and selected in self._files:
             path, _ = self._files[selected]
@@ -762,16 +815,11 @@ class RuntimeTab(tk.Frame):
                             result = {'status': 'ERROR', 'libraries': [], 'error': reason, 'detail': ''}
                         elif kinds[name] == 'jar/application':
                             minimum = minimum_java_version(path)
-                            if self._component(name).get('present_in_image'):
-                                resolution = self._image_java_resolution(minimum, plan)
-                            else:
-                                target = plan.get('target_java')
-                                if target is None or target < minimum:
-                                    if java_probe is None:
-                                        java_probe = probe_java(runtime, timeout=12)
-                                base_version = java_probe.get('version') if java_probe and java_probe.get('status') == 'OK' else None
-                                resolution = evaluate_java_requirement(minimum, base_version, plan,
-                                    java_probe.get('detail', '') if java_probe and java_probe.get('status') != 'OK' else '')
+                            if java_probe is None:
+                                java_probe = probe_java(runtime, timeout=25)
+                            base_version = java_probe.get('version') if java_probe.get('status') == 'OK' else None
+                            resolution = evaluate_java_requirement(minimum, base_version, plan,
+                                java_probe.get('detail', '') if java_probe.get('status') != 'OK' else '')
                             if resolution['status'] != 'FOUND':
                                 confirmed = compatible_java_override(self.app.state, minimum)
                                 if confirmed:

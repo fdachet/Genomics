@@ -5,11 +5,22 @@ import shlex
 import subprocess
 import tarfile
 import threading
+import time
+import uuid
 from datetime import datetime, timezone
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from project_state import effective_builder_image
+from build_artifacts import read_record
+from component_presets import suggested_destination
+from runtime_source_status import runtime_component_status
+from component_provenance import provenance_from_docker
+from docker_image_checkpoint import save_full_image_to_tar
+from workflow_toolbar import add_more_menu
+from image_filesystem_inventory import inspect_saved_tar, inspect_tag_via_export, InspectionCancelled, InspectionTimeout
+from component_provenance import image_identity
+from docker_image_checkpoint import docker_image_matches_tar
 
 
 class BaseTab(tk.Frame):
@@ -18,7 +29,25 @@ class BaseTab(tk.Frame):
         self.app = app
         self._library_records = []
         self._busy = False
+        self._inspection_active = False
+        self._inspection_target = ''
+        self._inspection_cancel = threading.Event()
+        self._inspection_process = None
+        self._inspection_start = 0.0
+        self._inspection_phase = 'Idle'
+        self._inspection_layer = (0, 0)
+        self._inspection_stage_index = 0
+        self._inspection_last_update = 0.0
+        self._scan_data_lock = threading.Lock()
+        self._scan_counts = {'EXEC': 0, 'PKG': 0, 'PIP': 0, 'RPKG': 0, 'JAR': 0}
+        self._scan_totals = {}
+        self._scan_recent_packages = []
+        self._scan_last_name = ''
+        self._scan_detail = ''
+        self._scan_previous_package_count = 0
+        self._auto_inspections = set()
         self._active_role = "runtime"
+        self._image_export_busy = False
 
         self.app.state.setdefault("runtime_base_archive", "")
         self.app.state.setdefault("builder_base_archive", "")
@@ -48,7 +77,8 @@ class BaseTab(tk.Frame):
         tk.Label(
             selection_note,
             text="Runtime and builder images are selected in Tab 1 — Project / Base. "
-                 "A TAR is optional: Tab 2 inspects Docker tags directly and shows their installed packages.",
+                 "A TAR is optional: Tab 2 inspects the CURRENT selected image, including binaries "
+                 "from earlier builds. New compiled outputs remain staged until assembled in Tab 6.",
             bg="#D6EAF8", fg="#154360", justify="left", anchor="w", padx=10, pady=8,
         ).pack(side="left", fill="x", expand=True)
         selectors = tk.LabelFrame(
@@ -94,20 +124,9 @@ class BaseTab(tk.Frame):
 
         base_buttons = tk.Frame(selectors, bg="#EAF2F8")
         base_buttons.grid(row=6, column=1, columnspan=2, sticky="w", padx=8, pady=6)
-        tk.Button(
-            base_buttons,
-            text="Load selected bases into Docker",
-            bg="#2E86C1",
-            fg="white",
-            command=self.load_selected_bases,
-        ).pack(side="left", padx=3)
-        tk.Button(
-            base_buttons,
-            text="Unload GUI-loaded bases",
-            bg="#7B241C",
-            fg="white",
-            command=self.unload_gui_images,
-        ).pack(side="left", padx=3)
+        self.image_save_button = tk.Button(base_buttons, text="Save selected image to TAR",
+                                           bg="#117864", fg="white", command=self.save_selected_image_to_tar)
+        self.image_save_button.pack(side="left", padx=5)
         selectors.columnconfigure(1, weight=1)
 
         advanced = tk.LabelFrame(
@@ -140,11 +159,12 @@ class BaseTab(tk.Frame):
         self.lower.add(self.inventory_frame, minsize=650)
         self.lower.add(self.analysis_frame, minsize=430)
 
-        tk.Label(self.inventory_frame, text="Base contents / software inventory", bg="#EAF2F8", font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(self.inventory_frame, text="Selected Docker image / installed software inventory", bg="#EAF2F8", font=("Segoe UI", 10, "bold")).pack(anchor="w")
         inventory_buttons = tk.Frame(self.inventory_frame, bg="#EAF2F8")
         inventory_buttons.pack(fill="x", pady=(4, 4))
         tk.Button(inventory_buttons, text="Show runtime", bg="#AED6F1", command=self.show_runtime_contents).pack(side="left", padx=(0, 3))
         tk.Button(inventory_buttons, text="Show builder", bg="#D7BDE2", command=self.show_builder_contents).pack(side="left", padx=3)
+        tk.Button(inventory_buttons, text="Compiled outputs", bg="#F9E79F", command=self.show_compiled_outputs).pack(side="left", padx=3)
         tk.Button(
             inventory_buttons,
             text="Inspect / refresh selected",
@@ -152,8 +172,11 @@ class BaseTab(tk.Frame):
             fg="white",
             command=self.refresh_selected_inventory,
         ).pack(side="left", padx=3)
-        tk.Button(inventory_buttons, text="Full inventory", bg="#117864", fg="white", command=self.show_full_package_list).pack(side="left", padx=3)
-        tk.Button(inventory_buttons, text="Probe version(s)", bg="#7D3C98", fg="white", command=self.probe_selected_version).pack(side="left", padx=3)
+        add_more_menu(inventory_buttons, [
+            ("Full package inventory report", self.show_full_package_list),
+            ("Probe selected executable version", self.probe_selected_version),
+            ("Unload images imported by this GUI", self.unload_gui_images),
+        ], "#EAF2F8")
 
         self.inventory_summary = tk.StringVar(value="Select runtime or builder. Cached inspection results will appear here.")
         tk.Label(
@@ -165,6 +188,21 @@ class BaseTab(tk.Frame):
             anchor="w",
             wraplength=650,
         ).pack(fill="x", pady=(0, 4))
+
+        self.scan_status = tk.StringVar(value="Inspection idle — select an image and click Inspect / refresh selected")
+        scan_row = tk.Frame(self.inventory_frame, bg="#EAF2F8")
+        scan_row.pack(fill="x", pady=(0, 6))
+        self.scan_progress = ttk.Progressbar(scan_row, mode="determinate", maximum=800, length=210)
+        self.scan_progress.pack(side="left", fill="x", expand=True, padx=(0, 7))
+        self.scan_stop = tk.Button(scan_row, text="Stop scan", command=self.cancel_inspection,
+                                   state="disabled", bg="#B03A2E", fg="white")
+        self.scan_stop.pack(side="right")
+        tk.Label(self.inventory_frame, textvariable=self.scan_status, bg="#EAF2F8", fg="#154360",
+                 anchor="w", justify="left", wraplength=700).pack(fill="x", pady=(0, 3))
+        self.scan_found_text = tk.StringVar(value='Actual results: no scan running')
+        tk.Label(self.inventory_frame, textvariable=self.scan_found_text, bg="#EAF2F8",
+                 fg="#1F4E78", anchor="w", justify="left", wraplength=700,
+                 font=('Segoe UI', 9, 'bold')).pack(fill='x', pady=(0, 4))
 
         inventory_filter = tk.Frame(self.inventory_frame, bg="#EAF2F8")
         inventory_filter.pack(fill="x", pady=(0, 4))
@@ -182,10 +220,11 @@ class BaseTab(tk.Frame):
                 "Python packages",
                 "R packages",
                 "JAR files",
+                "Compiled outputs (staged)",
             ),
         )
         self.inventory_view_combo.pack(side="left", padx=(4, 8))
-        self.inventory_view_combo.bind("<<ComboboxSelected>>", lambda e: self._populate_inventory_tree())
+        self.inventory_view_combo.bind("<<ComboboxSelected>>", lambda e: self._inventory_view_changed())
         tk.Label(inventory_filter, text="Search:", bg="#EAF2F8").pack(side="left")
         self.inventory_search = tk.StringVar()
         search_entry = tk.Entry(inventory_filter, textvariable=self.inventory_search, width=18)
@@ -232,8 +271,26 @@ class BaseTab(tk.Frame):
             args,
             capture_output=True,
             text=True,
+            errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             **kwargs,
+        )
+
+    @staticmethod
+    def _run_linux_stdin_script(args, script, timeout):
+        normalized = str(script).replace("\r\n", "\n").replace("\r", "\n")
+        result = subprocess.run(
+            args,
+            input=normalized.encode("utf-8"),
+            capture_output=True,
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return subprocess.CompletedProcess(
+            args,
+            result.returncode,
+            result.stdout.decode("utf-8", errors="replace"),
+            result.stderr.decode("utf-8", errors="replace"),
         )
 
     def _log(self, text):
@@ -292,12 +349,29 @@ class BaseTab(tk.Frame):
         inventory = self.app.state.get(inventory_key)
         inspection = dict(inventory) if isinstance(inventory, dict) else {}
         system = self.app.state.get(system_key)
-        if isinstance(system, dict) and system and not inspection.get("system"):
+        current_id = self._docker_image_id(tag)
+        if not self._has_complete_inspection(inspection) or not current_id or inspection.get('image_id') != current_id:
+            if inspection and self._has_complete_inspection(inspection):
+                self.app.state[inventory_key] = {}
+            inspection = {}
+        elif isinstance(system, dict) and system and not inspection.get("system"):
             inspection["system"] = dict(system)
         return {
             "path": "", "tags": [tag], "size": 0, "tag_only": True, "role": role,
-            "metadata": {"docker_tag": tag, "inspection": inspection},
+            "metadata": {"docker_tag": tag, "inspection": inspection,
+                         "os": system.get("os", "") if isinstance(system, dict) else "",
+                         "architecture": system.get("architecture", "") if isinstance(system, dict) else ""},
         }
+
+    @staticmethod
+    def _has_complete_inspection(inspection):
+        if not isinstance(inspection, dict) or inspection.get('schema') != 6:
+            return False
+        executables = inspection.get('executables')
+        packages = inspection.get('packages')
+        return (isinstance(executables, list) and len(executables) > 0
+                and isinstance(packages, dict) and isinstance(packages.get('os'), list)
+                and bool(inspection.get('inspected_at')))
 
     def _inventory_short_summary(self, rec):
         if not rec:
@@ -305,7 +379,7 @@ class BaseTab(tk.Frame):
         metadata = rec.get("metadata") or (self._read_sidecar(rec.get("path", "")) if rec.get("path") else {})
         label = rec["tags"][0] if rec.get("tag_only") else Path(rec.get("path", "")).name
         inspection = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
-        if not inspection:
+        if not self._has_complete_inspection(inspection):
             return f"{label}: not inspected"
         system = inspection.get("system") if isinstance(inspection.get("system"), dict) else {}
         packages = inspection.get("packages") if isinstance(inspection.get("packages"), dict) else {}
@@ -340,6 +414,8 @@ class BaseTab(tk.Frame):
             inventory = {}
         if not isinstance(system, dict):
             system = {}
+        if not self._has_complete_inspection(inventory):
+            return tag + ' | ' + str(system.get('os') or '?') + ' | software inventory NOT INSPECTED'
         packages = inventory.get('packages') or {}
         if not isinstance(packages, dict):
             packages = {}
@@ -358,6 +434,7 @@ class BaseTab(tk.Frame):
 
     def show_runtime_contents(self):
         self._active_role = "runtime"
+        self.inventory_view.set("All software entries")
         rec = self._runtime_record()
         if not rec:
             messagebox.showwarning("Runtime base", "No runtime Docker image is selected.")
@@ -366,11 +443,26 @@ class BaseTab(tk.Frame):
 
     def show_builder_contents(self):
         self._active_role = "builder"
+        self.inventory_view.set("All software entries")
         rec = self._builder_record()
         if not rec:
             messagebox.showwarning("Builder base", "No builder Docker image is selected.")
             return
         self._display_selected_inventory(rec)
+
+    def show_compiled_outputs(self):
+        self.inventory_view.set("Compiled outputs (staged)")
+        self._populate_inventory_tree()
+
+    def _inventory_view_changed(self):
+        if self.inventory_view.get() == "Compiled outputs (staged)":
+            self._populate_inventory_tree()
+            return
+        rec = self._selected_record()
+        if rec:
+            self._display_selected_inventory(rec)
+        else:
+            self._populate_inventory_tree()
 
     def _publish_builder_inspection(self, rec, inspection):
         if not rec or not inspection:
@@ -422,8 +514,24 @@ class BaseTab(tk.Frame):
                 self.prepare.delete("1.0", "end")
                 self.prepare.insert("1.0", wanted)
 
-        
         self.refresh_selected_archives()
+        rec = self._runtime_record()
+        if rec and rec.get('tag_only'):
+            tag = str(rec.get('tags', [''])[0] or '')
+            image_id = self._docker_image_id(tag)
+            key = (tag, image_id)
+            metadata = rec.get('metadata') or {}
+            if image_id and key not in self._auto_inspections and not self._has_complete_inspection(metadata.get('inspection')):
+                self._auto_inspections.add(key)
+                def inspect_when_visible():
+                    current = self._runtime_record()
+                    if not current or current.get('tags', [''])[0] != tag:
+                        return
+                    if self._inspection_active:
+                        self.after(400, inspect_when_visible)
+                    else:
+                        self._inspection_record(current, force=True)
+                self.after(150, inspect_when_visible)
 
     def _archive_tags(self, archive_path):
         tags = []
@@ -458,13 +566,16 @@ class BaseTab(tk.Frame):
         return tags
 
     def _image_exists(self, tag):
+        return bool(self._docker_image_id(tag))
+
+    def _docker_image_id(self, tag):
         if not tag:
-            return False
+            return ''
         try:
-            p = self._run(["docker", "image", "inspect", tag], timeout=8)
-            return p.returncode == 0
+            p = self._run(["docker", "image", "inspect", "--format", "{{.Id}}", tag], timeout=8)
+            return p.stdout.strip() if p.returncode == 0 else ''
         except (OSError, subprocess.TimeoutExpired):
-            return False
+            return ''
 
     def _sidecar_path(self, archive_path):
         return Path(archive_path).with_suffix(".json")
@@ -542,6 +653,8 @@ class BaseTab(tk.Frame):
         metadata = rec.get("metadata") or self._read_sidecar(rec["path"])
         rec["metadata"] = metadata
         inspection = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
+        if not self._has_complete_inspection(inspection):
+            inspection = {}
         if inspection:
             self._apply_persistent_versions(metadata, inspection)
         system = inspection.get("system") if isinstance(inspection.get("system"), dict) else {}
@@ -562,12 +675,14 @@ class BaseTab(tk.Frame):
             pm = system.get("package_manager", "unknown")
             inspected_at = inspection.get("inspected_at", "")
             total_entries = len(executables) + len(jars) + len(os_packages) + len(py_packages) + len(r_packages)
+            refresh_note = ('REFRESH IN PROGRESS — showing the previous saved inventory until verification finishes.\n'
+                            if self._inspection_active and self._inspection_target == tag else '')
             self.inventory_summary.set(
-                f"{archive_name}\n"
+                refresh_note + f"{archive_name}\n"
                 f"Tag: {tag}   |   OS: {os_name}   |   Arch: {arch}\n"
                 f"Software entries: {total_entries}   |   Executables: {len(executables)}   |   OS packages: {len(os_packages)}   |   JARs: {len(jars)}\n"
                 f"Python packages: {len(py_packages)}   |   R packages: {len(r_packages)}   |   libc: {libc}   |   Package manager: {pm}\n"
-                f"Inspection: {inspected_at or 'cached'}"
+                f"Inspection: {inspected_at or 'cached'}   |   Staged outputs (not installed): {len(self._staged_inventory_rows()) if self._active_role == 'runtime' else 0}"
             )
             self._populate_inventory_tree(inspection)
             if rec.get("tag_only"):
@@ -583,26 +698,58 @@ class BaseTab(tk.Frame):
                 self._publish_builder_inspection(rec, inspection)
             self._update_role_summaries()
         else:
-            self.inventory_tree.delete(*self.inventory_tree.get_children())
             os_name = metadata.get("os", "unknown")
             arch = metadata.get("architecture", "unknown")
             self.inventory_summary.set(
                 f"{archive_name}\n"
                 f"Tag: {tag}   |   OS: {os_name}   |   Arch: {arch}\n"
-                "No cached software inventory. Click 'Inspect / refresh selected'."
+                "No cached installed-software inventory. Click 'Inspect / refresh selected'. Staged outputs may still be listed."
             )
+            self._populate_inventory_tree({})
+
+    def _staged_inventory_rows(self):
+        if self._active_role != "runtime":
+            return []
+        state = self.app.state
+        rows = []
+        for component in state.get("components", []) or []:
+            if not isinstance(component, dict) or str(component.get("kind", "")).strip().lower() != "source":
+                continue
+            installed = runtime_component_status(state, component)
+            if installed and installed.get("verified"):
+                continue
+            record, _ = read_record(state, component)
+            if not record:
+                continue
+            filename = Path(str(record["artifact"])).name
+            destination = str(component.get("destination") or suggested_destination(component.get("kind"), component.get("name"))).strip()
+            if not destination.startswith("/"):
+                destination = "/usr/local/bin/"
+            final_path = destination.rstrip("/") + "/" + filename
+            active = bool(component.get("enabled", True))
+            rows.append({"type": "Staged executable" if active else "Staged (disabled)",
+                         "name": str(component.get("name") or filename),
+                         "version": str(component.get("version") or record.get("version") or ""),
+                         "path": "Planned: " + final_path + " (not in image; " +
+                                 ("build in Tab 6" if active else "currently disabled") + ") | Saved: " + str(record["artifact"])})
+        return rows
 
     def _populate_inventory_tree(self, inspection=None):
         self.inventory_tree.delete(*self.inventory_tree.get_children())
+        if self.inventory_view.get() == "Compiled outputs (staged)":
+            self._populate_compiled_outputs()
+            return
         if inspection is None:
             rec = self._selected_record()
             if not rec:
                 return
             metadata = rec.get("metadata") or self._read_sidecar(rec["path"])
             inspection = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
+            if not self._has_complete_inspection(inspection):
+                inspection = {}
             if inspection:
                 self._apply_persistent_versions(metadata, inspection)
-        if not inspection:
+        if not inspection and not self._staged_inventory_rows():
             return
 
         executables = inspection.get("executables") if isinstance(inspection.get("executables"), list) else []
@@ -625,11 +772,12 @@ class BaseTab(tk.Frame):
             jar = str(jar).strip()
             if jar:
                 rows.append({"type": "JAR", "name": Path(jar).name, "version": "", "path": jar})
+        rows.extend(self._staged_inventory_rows())
 
         view = self.inventory_view.get() if hasattr(self, "inventory_view") else "All software entries"
         query = self.inventory_search.get().strip().lower() if hasattr(self, "inventory_search") else ""
         view_map = {
-            "Executables": {"Executable"},
+            "Executables": {"Executable", "Staged executable", "Staged (disabled)"},
             "OS packages": {"OS package"},
             "Python packages": {"Python package"},
             "R packages": {"R package"},
@@ -648,12 +796,56 @@ class BaseTab(tk.Frame):
                 or query in str(r["type"]).lower()
             ]
 
-        type_order = {"Executable": 0, "OS package": 1, "Python package": 2, "R package": 3, "JAR": 4}
+        type_order = {"Executable": 0, "Staged executable": 1, "Staged (disabled)": 1, "OS package": 2, "Python package": 3, "R package": 4, "JAR": 5}
         rows.sort(key=lambda r: (type_order.get(r["type"], 9), str(r["name"]).lower(), str(r["path"]).lower()))
         for i, row in enumerate(rows):
             self.inventory_tree.insert("", "end", iid=f"inv{i}", values=(row["type"], row["name"], row["version"], row["path"]))
         if not rows:
             self.inventory_tree.insert("", "end", values=("", "<no matching software entries>", "", ""))
+
+    def _populate_compiled_outputs(self):
+        state = self.app.state
+        sources = [item for item in state.get('components', [])
+                   if str(item.get('kind', '')).lower() == 'source']
+        query = self.inventory_search.get().strip().lower()
+        ready = 0
+        in_runtime = 0
+        unverified = 0
+        visible = []
+        for item in sources:
+            name = str(item.get('name') or '')
+            active = bool(item.get('enabled', True))
+            installed = runtime_component_status(state, item)
+            if installed:
+                in_runtime += int(installed['verified'])
+                unverified += int(not installed['verified'])
+                kind = 'Present in image' if installed['verified'] else 'Unverified — build record only'
+                row = (kind, name, str(item.get('version') or ''), installed['path'] + ' | ' + installed['source'])
+                if not query or query in ' '.join(row).lower():
+                    visible.append(row)
+                continue
+            record, explanation = read_record(state, item)
+            if record:
+                ready += int(active)
+                filename = Path(record['artifact']).name
+                destination = str(item.get('destination') or suggested_destination(item.get('kind'), name)).rstrip('/')
+                final_path = (destination + '/' + filename) if destination.startswith('/') else '(set destination in Tab 3)'
+                kind = 'Staged executable' if active else 'Disabled executable'
+                location = 'Final: ' + final_path + ' | Saved: ' + str(record['artifact'])
+            else:
+                kind = 'Not ready' if active else 'Disabled source'
+                location = explanation
+            row = (kind, name, str(item.get('version') or ''), location)
+            if not query or query in ' '.join(row).lower():
+                visible.append(row)
+        self.inventory_summary.set('Compiled source outputs — ' + str(in_runtime) + ' already present in the selected runtime image; '
+                                   + str(unverified) + ' need runtime inspection; '
+                                   + str(ready) + ' ready to add in the NEXT Tab 6 build. '
+                                   'Select Show runtime to inspect executable files actually found in the image.')
+        for index, row in enumerate(sorted(visible, key=lambda item: item[1].lower())):
+            self.inventory_tree.insert('', 'end', iid='compiled' + str(index), values=row)
+        if not visible:
+            self.inventory_tree.insert('', 'end', values=('', '<no matching compiled source outputs>', '', ''))
 
     def _extract_version_candidate(self, raw, returncode=None):
         lines = [re.sub(r"\s+", " ", x.strip()) for x in (raw or "").splitlines() if x.strip()]
@@ -904,6 +1096,7 @@ fi
     tr '\t\r\n' '   ' | sed 's/|/\//g' | sed 's/  */ /g'
 }
 
+printf 'SCAN_STAGE\tIdentify operating system\n' >&2
 os_name="$(awk -F= '/^PRETTY_NAME=/{v=$2; gsub(/^"|"$/, "", v); print v; exit}' /etc/os-release 2>/dev/null)"
 [ -z "$os_name" ] && os_name="$(uname -s 2>/dev/null)"
 printf 'SYS\tos\t%s\n' "$(printf '%s' "$os_name" | clean_one_line)"
@@ -917,79 +1110,81 @@ command -v dpkg-query >/dev/null 2>&1 && pm="dpkg"
 [ "$pm" = "none" ] && command -v apk >/dev/null 2>&1 && pm="apk"
 printf 'SYS\tpackage_manager\t%s\n' "$pm"
 
+if command -v java >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    java_banner="$(timeout 6 java -version 2>&1 | head -n 1)"
+    if [ -n "$java_banner" ]; then
+        printf 'SYS\tjava_version\t%s\n' "$(printf '%s' "$java_banner" | clean_one_line)"
+        printf 'SYS\tjava_executable\t%s\n' "$(command -v java)"
+    fi
+fi
+
+printf 'SCAN_STAGE\tSearch executable files\n' >&2
 exec_tmp="/tmp/gui_all_executables.$$"
 : > "$exec_tmp"
 for d in /bin /sbin /usr/bin /usr/sbin /usr/local/bin /usr/local/sbin /opt; do
     if [ -d "$d" ]; then
+        printf 'SCAN_DETAIL\tSearching %s\n' "$d" >&2
         if [ "$d" = "/opt" ]; then
             depth=8
         else
             depth=4
         fi
-        find "$d" -maxdepth "$depth" \( -type f -o -type l \) -print 2>/dev/null | while IFS= read -r f; do
+        if [ "$d" = "/opt" ] && command -v timeout >/dev/null 2>&1; then
+            timeout 12 find "$d" -maxdepth "$depth" \( -type f -o -type l \) -print 2>/dev/null
+        else
+            find "$d" -maxdepth "$depth" \( -type f -o -type l \) -print 2>/dev/null
+        fi | while IFS= read -r f; do
             [ -x "$f" ] && printf '%s\n' "$f"
         done >> "$exec_tmp"
     fi
 done
-sort -u "$exec_tmp" 2>/dev/null | while IFS= read -r exe_path; do
+sort -u "$exec_tmp" 2>/dev/null > "$exec_tmp.sorted"
+exec_total="$(wc -l < "$exec_tmp.sorted" | tr -d ' ')"
+printf 'SCAN_TOTAL\tEXEC\t%s\n' "$exec_total"
+while IFS= read -r exe_path; do
     [ -n "$exe_path" ] || continue
-    exe_name="$(basename "$exe_path" | clean_one_line)"
-    resolved="$(readlink -f "$exe_path" 2>/dev/null || printf '%s' "$exe_path")"
-    owner=""
-    owner_version=""
-    if [ "$pm" = "dpkg" ]; then
-        owner_line="$(dpkg-query -S "$exe_path" 2>/dev/null | head -1)"
-        [ -z "$owner_line" ] && owner_line="$(dpkg-query -S "$resolved" 2>/dev/null | head -1)"
-        owner="$(printf '%s' "$owner_line" | cut -d: -f1 | clean_one_line)"
-        [ -n "$owner" ] && owner_version="$(dpkg-query -W -f='${Version}' "$owner" 2>/dev/null | clean_one_line)"
-    elif [ "$pm" = "rpm" ]; then
-        owner="$(rpm -qf --qf '%{NAME}' "$resolved" 2>/dev/null | clean_one_line)"
-        [ -n "$owner" ] && owner_version="$(rpm -qf --qf '%{VERSION}-%{RELEASE}' "$resolved" 2>/dev/null | clean_one_line)"
-    elif [ "$pm" = "apk" ]; then
-        owner_line="$(apk info --who-owns "$resolved" 2>/dev/null | head -1 | clean_one_line)"
-        owner="$(printf '%s' "$owner_line" | awk '{print $1}')"
-        [ -n "$owner" ] && owner_version="$(apk info -e "$owner" 2>/dev/null && apk info -v "$owner" 2>/dev/null | head -1 | sed 's/^.*-//' | clean_one_line)"
-    fi
-    printf 'EXEC\t%s\t%s\t%s\t%s\n' "$exe_name" "$exe_path" "$owner_version" "$owner"
-done
-rm -f "$exec_tmp"
+    exe_name="${exe_path##*/}"
+    printf 'EXEC\t%s\t%s\t\t\n' "$exe_name" "$exe_path"
+done < "$exec_tmp.sorted"
+rm -f "$exec_tmp" "$exec_tmp.sorted"
 
+printf 'SCAN_STAGE\tRead installed system packages\n' >&2
+pkg_tmp="/tmp/gui_installed_packages.$$"
+: > "$pkg_tmp"
 if [ "$pm" = "dpkg" ]; then
-    dpkg-query -W -f='PKG\tOS\t${binary:Package}\t${Version}\n' 2>/dev/null || true
+    dpkg-query -W -f='PKG\tOS\t${binary:Package}\t${Version}\n' > "$pkg_tmp" 2>/dev/null || true
 elif [ "$pm" = "rpm" ]; then
-    rpm -qa --qf 'PKG\tOS\t%{NAME}\t%{VERSION}-%{RELEASE}\n' 2>/dev/null || true
-    rpm -qa --qf '%{NAME}\n' 2>/dev/null | while IFS= read -r pkg; do
-        [ -n "$pkg" ] || continue
-        rpm -q --requires "$pkg" 2>/dev/null | while IFS= read -r requirement; do
-            [ -n "$requirement" ] && printf 'PKGREQ\t%s\t%s\n' "$pkg" "$(printf '%s' "$requirement" | clean_one_line)"
-        done
-        rpm -q --provides "$pkg" 2>/dev/null | while IFS= read -r provided; do
-            [ -n "$provided" ] && printf 'PKGPROVIDES\t%s\t%s\n' "$pkg" "$(printf '%s' "$provided" | clean_one_line)"
-        done
-    done
+    rpm -qa --qf 'PKG\tOS\t%{NAME}\t%{VERSION}-%{RELEASE}\n' > "$pkg_tmp" 2>/dev/null || true
 elif [ "$pm" = "apk" ]; then
-    apk info -v 2>/dev/null | while IFS= read -r line; do printf 'PKG\tOS\t%s\t\n' "$line"; done
+    apk info -v 2>/dev/null | while IFS= read -r line; do printf 'PKG\tOS\t%s\t\n' "$line"; done > "$pkg_tmp"
 fi
+pkg_total="$(wc -l < "$pkg_tmp" | tr -d ' ')"
+printf 'SCAN_TOTAL\tPKG\t%s\n' "$pkg_total"
+cat "$pkg_tmp"
+rm -f "$pkg_tmp"
 
-if command -v python3 >/dev/null 2>&1 && python3 -m pip --version >/dev/null 2>&1; then
-    python3 -m pip list --format=freeze 2>/dev/null | while IFS= read -r line; do
+printf 'SCAN_STAGE\tRead Python packages\n' >&2
+if command -v timeout >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    timeout 8 python3 -m pip list --format=freeze 2>/dev/null | while IFS= read -r line; do
         [ -n "$line" ] && printf 'PIP\t%s\n' "$line"
     done
-elif command -v python >/dev/null 2>&1 && python -m pip --version >/dev/null 2>&1; then
-    python -m pip list --format=freeze 2>/dev/null | while IFS= read -r line; do
+elif command -v timeout >/dev/null 2>&1 && command -v python >/dev/null 2>&1; then
+    timeout 8 python -m pip list --format=freeze 2>/dev/null | while IFS= read -r line; do
         [ -n "$line" ] && printf 'PIP\t%s\n' "$line"
     done
 fi
 
-if command -v Rscript >/dev/null 2>&1; then
-    Rscript -e 'ip <- installed.packages()[,c("Package","Version"),drop=FALSE]; apply(ip,1,function(x) cat("RPKG\t",x[1],"\t",x[2],"\n",sep=""))' 2>/dev/null || true
+printf 'SCAN_STAGE\tRead R packages\n' >&2
+if command -v Rscript >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+    timeout 8 Rscript --vanilla -e 'ip <- installed.packages()[,c("Package","Version"),drop=FALSE]; apply(ip,1,function(x) cat("RPKG\t",x[1],"\t",x[2],"\n",sep=""))' 2>/dev/null || true
 fi
 
-for d in /opt /usr/local /usr/share /usr/lib /usr; do
-    if [ -d "$d" ]; then
-        find "$d" -maxdepth 8 -type f -name '*.jar' -print 2>/dev/null
-    fi
-done | sort -u | while IFS= read -r jar; do
+printf 'SCAN_STAGE\tIndex application JAR files\n' >&2
+if command -v timeout >/dev/null 2>&1; then
+    timeout 18 find /opt /usr -maxdepth 8 -type f -name '*.jar' -print 2>/dev/null
+else
+    find /opt /usr -maxdepth 6 -type f -name '*.jar' -print 2>/dev/null
+fi | sort -u | while IFS= read -r jar; do
     printf 'JAR\t%s\n' "$jar"
 done
 '''
@@ -1054,57 +1249,393 @@ done
             "packages": packages,
         }
 
+    def save_selected_image_to_tar(self):
+        if self._image_export_busy:
+            return
+        rec = self._selected_record()
+        if not rec:
+            messagebox.showerror('Save Docker TAR', 'Select a runtime or builder image in Tab 1.', parent=self)
+            return
+        image = str((rec.get('tags') or [''])[0] or '').strip()
+        if not image:
+            messagebox.showerror('Save Docker TAR', 'The selected image has no Docker tag.', parent=self)
+            return
+        directory = str(self.app.state.get('export_image_dir') or '').strip()
+        if not Path(directory).is_dir():
+            directory = str(Path.cwd())
+        filename = re.sub(r'[^A-Za-z0-9_.-]', '_', image) + '_FULL.tar'
+        chosen = filedialog.asksaveasfilename(
+            parent=self, title='Save complete Docker image to TAR', initialdir=directory,
+            initialfile=filename, defaultextension='.tar',
+            filetypes=[('Docker image TAR', '*.tar'), ('All files', '*.*')],
+        )
+        if not chosen:
+            return
+        if Path(chosen).suffix.lower() != '.tar':
+            chosen += '.tar'
+        overwrite = Path(chosen).exists()
+        if overwrite and not messagebox.askyesno('Overwrite existing image archive',
+                'Replace this TAR with the selected Docker image after verifying the export?\n\n'
+                + str(chosen), parent=self):
+            return
+        self._image_export_busy = True
+        self.image_save_button.configure(state='disabled')
+        self._log(f'Saving complete Docker image {image} to {chosen}\n')
+
+        def worker():
+            try:
+                result = save_full_image_to_tar(image, chosen, overwrite=overwrite)
+                error = ''
+            except Exception as exc:
+                result = None
+                error = str(exc)
+            def finish():
+                self._image_export_busy = False
+                self.image_save_button.configure(state='normal')
+                if error:
+                    self._log('TAR export FAILED: ' + error + '\n')
+                    messagebox.showerror('Docker TAR export failed', error, parent=self)
+                else:
+                    self._log('COMPLETE Docker TAR saved: ' + result['archive'] + '\n')
+                    self.app.state['last_saved_full_tar'] = result['archive']
+                    messagebox.showinfo('Docker TAR saved',
+                            'Saved the complete image without rebuilding.\n\n' + result['archive'], parent=self)
+            try:
+                self.after(0, finish)
+            except RuntimeError:
+                pass
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _scan_message(self, phase):
+        if not self._inspection_active:
+            return
+        phases = {
+            'Read saved image manifest': 0,
+            'Create temporary inspection container (not started)': 0,
+            'Export image filesystem for inspection': 1,
+            'Identify operating system': 2,
+            'Read installed system packages': 3,
+            'Search executable files': 4,
+            'Read Python packages': 5,
+            'Read R packages': 6,
+            'Index application JAR files': 7,
+        }
+        self._inspection_phase = str(phase).strip() or self._inspection_phase
+        layer = re.search(r'^Read image filesystem layer (\d+)/(\d+)$', self._inspection_phase)
+        if layer:
+            self._inspection_stage_index = 1
+            self._inspection_layer = (int(layer.group(1)), int(layer.group(2)))
+        else:
+            self._inspection_stage_index = phases.get(self._inspection_phase, self._inspection_stage_index)
+        self._inspection_last_update = time.monotonic()
+        self._scan_detail = ''
+        self._log('Scan stage: ' + self._inspection_phase + '\n')
+
+    def _scan_emit(self, kind, value):
+        if kind == 'stage':
+            self.after(0, lambda v=value: self._scan_message(v))
+        elif kind == 'detail':
+            with self._scan_data_lock:
+                self._scan_detail = str(value)
+                self._inspection_last_update = time.monotonic()
+        elif kind == 'total':
+            self._read_scan_event('SCAN_TOTAL\t%s\t%s' % (value[0], value[1]))
+        elif kind == 'item':
+            item = tuple(str(v) for v in value)
+            if item[0] == 'PKG':
+                self._read_scan_event('PKG\tOS\t%s\t%s' % (item[1], item[2]))
+            elif item[0] == 'EXEC':
+                self._read_scan_event('EXEC\t%s\t%s\t\t' % (item[1], item[2]))
+            elif item[0] in ('PIP', 'RPKG', 'JAR'):
+                self._read_scan_event(item[0] + '\t' + '\t'.join(item[1:]))
+
+    def _read_scan_event(self, line):
+        parts = line.rstrip('\r\n').split('\t')
+        if not parts:
+            return
+        kind = parts[0]
+        with self._scan_data_lock:
+            if kind == 'SCAN_TOTAL' and len(parts) >= 3:
+                try:
+                    self._scan_totals[parts[1]] = max(0, int(parts[2]))
+                except ValueError:
+                    pass
+                return
+            if kind not in self._scan_counts:
+                return
+            self._scan_counts[kind] += 1
+            if kind == 'PKG' and len(parts) >= 4:
+                detail = parts[2].strip() + ' ' + parts[3].strip()
+                self._scan_recent_packages.append(detail.strip())
+                self._scan_recent_packages = self._scan_recent_packages[-12:]
+                self._scan_last_name = detail.strip()
+            elif kind == 'EXEC' and len(parts) >= 3:
+                self._scan_last_name = parts[1].strip()
+            elif kind in ('PIP', 'RPKG', 'JAR'):
+                self._scan_last_name = parts[1].strip() if len(parts) > 1 else ''
+        self._inspection_last_update = time.monotonic()
+
+    def _scan_clock(self):
+        if not self._inspection_active:
+            return
+        elapsed = int(time.monotonic() - self._inspection_start)
+        quiet = int(time.monotonic() - self._inspection_last_update)
+        with self._scan_data_lock:
+            counts = dict(self._scan_counts)
+            totals = dict(self._scan_totals)
+            recent = list(self._scan_recent_packages)
+            self._scan_recent_packages.clear()
+            latest = self._scan_last_name
+        with self._scan_data_lock:
+            detail = self._scan_detail
+        stage = self._inspection_stage_index
+        target_kind = {3: 'PKG', 4: 'EXEC'}.get(stage)
+        completed = 0.0
+        if target_kind and totals.get(target_kind, 0):
+            completed = min(1.0, counts[target_kind] / totals[target_kind])
+        layer_progress = 0
+        if stage == 1 and self._inspection_layer[1] > 0:
+            layer_progress = int(max(0, self._inspection_layer[0] - 1) / self._inspection_layer[1] * 100)
+        self.scan_progress['value'] = min(799, stage * 100 + max(int(completed * 100), layer_progress))
+        extra = f' | {target_kind}: {counts[target_kind]}/{totals[target_kind]}' if target_kind and target_kind in totals else ''
+        if detail:
+            extra += ' | ' + detail
+        waiting = f' | No new results for {quiet}s' if quiet >= 10 else ''
+        self.scan_status.set(
+            f'Stage {stage + 1}/8: {self._inspection_phase} | '
+            f'{elapsed // 60:02d}:{elapsed % 60:02d} elapsed{extra}{waiting}')
+        tally = (f'Found {counts["PKG"]} OS packages, {counts["EXEC"]} executables, '
+                 f'{counts["PIP"]} Python packages, {counts["RPKG"]} R packages, '
+                 f'{counts["JAR"]} JARs.')
+        if recent:
+            newly_detected = counts['PKG'] - self._scan_previous_package_count
+            self._scan_previous_package_count = counts['PKG']
+            self.scan_found_text.set(tally +
+                f'\n{newly_detected} new OS packages in this update; latest: ' + ', '.join(recent[-6:]))
+            self._log(f'Packages discovered: {counts["PKG"]}' +
+                      (' / ' + str(totals['PKG']) if 'PKG' in totals else '') +
+                      ' | Recent: ' + ', '.join(recent[-6:]) + '\n')
+        elif latest:
+            self.scan_found_text.set(tally + '\nMost recent item: ' + latest)
+        else:
+            self.scan_found_text.set(tally + '\nWaiting for Docker to report the next item...')
+        self.after(1000, self._scan_clock)
+
+    def cancel_inspection(self):
+        if not self._inspection_active:
+            return
+        self._inspection_cancel.set()
+        self._inspection_phase = "Cancelling Docker scan"
+        self.scan_stop.configure(state="disabled")
+        self.scan_status.set("Cancelling scan — existing image remains unchanged")
+
+    def _finish_scan_ui(self):
+        self._inspection_active = False
+        self._inspection_target = ''
+        self._inspection_process = None
+        self.scan_progress['value'] = 800 if getattr(self, '_inspection_succeeded', False) else self.scan_progress['value']
+        self.scan_stop.configure(state="disabled")
+
+    def _run_live_inspection(self, args, script, timeout=150):
+        normalized = str(script).replace("\r\n", "\n").replace("\r", "\n")
+        command = list(args)
+        process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, bufsize=0,
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self._inspection_process = process
+        output = []
+        errors = []
+        def reader(pipe, sink, stages=False):
+            try:
+                for raw in iter(pipe.readline, b''):
+                    line = raw.decode('utf-8', errors='replace')
+                    if stages and line.startswith('SCAN_STAGE\t'):
+                        phase = line.split('\t', 1)[1].strip()
+                        try:
+                            self.after(0, lambda value=phase: self._scan_message(value))
+                        except RuntimeError:
+                            pass
+                    elif stages and line.startswith('SCAN_DETAIL\t'):
+                        detail = line.split('\t', 1)[1].strip()
+                        try:
+                            self.after(0, lambda value=detail: setattr(self, '_scan_detail', value))
+                        except RuntimeError:
+                            pass
+                    else:
+                        if not stages:
+                            self._read_scan_event(line)
+                        sink.append(line)
+            finally:
+                pipe.close()
+        out_thread = threading.Thread(target=reader, args=(process.stdout, output), daemon=True)
+        err_thread = threading.Thread(target=reader, args=(process.stderr, errors, True), daemon=True)
+        out_thread.start()
+        err_thread.start()
+        def send():
+            try:
+                process.stdin.write(normalized.encode('utf-8'))
+                process.stdin.flush()
+            except (OSError, ValueError, BrokenPipeError):
+                pass
+            finally:
+                try:
+                    process.stdin.close()
+                except (OSError, ValueError):
+                    pass
+        writer = threading.Thread(target=send, daemon=True)
+        writer.start()
+        end = time.monotonic() + timeout
+        timed_out = False
+        try:
+            while process.poll() is None:
+                if self._inspection_cancel.is_set() or time.monotonic() >= end:
+                    timed_out = not self._inspection_cancel.is_set()
+                    process.terminate()
+                    try:
+                        process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                    break
+                time.sleep(0.15)
+            process.wait(timeout=5)
+            draining = 0.15 if (timed_out or self._inspection_cancel.is_set()) else 2
+            out_thread.join(timeout=draining)
+            err_thread.join(timeout=draining)
+            if self._inspection_cancel.is_set():
+                raise InterruptedError('Docker image inspection was cancelled. The previous verified inventory remains unchanged.')
+            if timed_out:
+                raise subprocess.TimeoutExpired(command, timeout)
+            return subprocess.CompletedProcess(command, process.returncode, ''.join(output), ''.join(errors))
+        finally:
+            if process.poll() is None:
+                process.kill()
+            self._inspection_process = None
+
     def _inspection_record(self, rec, force=False):
+        if self._inspection_active:
+            messagebox.showinfo('Inspect base', 'The current Docker image inspection is still running. Wait for its results.', parent=self)
+            return
         metadata = rec.get("metadata") or self._read_sidecar(rec["path"])
         rec["metadata"] = metadata
         cached = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
-        if cached and not force and cached.get("schema") == 6:
+        archive_cache_valid = False
+        if not rec.get('tag_only') and rec.get('path'):
+            try:
+                archive_stat = Path(rec['path']).stat()
+                stamp = (rec.get('metadata') or {}).get('archive_stamp') or {}
+                archive_cache_valid = stamp.get('size') == archive_stat.st_size and stamp.get('mtime_ns') == archive_stat.st_mtime_ns
+            except OSError:
+                pass
+        if not force and self._has_complete_inspection(cached) and (
+                archive_cache_valid or
+                (rec.get('tag_only') and cached.get('image_id') == self._docker_image_id(rec['tags'][0]))):
             self._show_record_inventory(rec)
             return
 
         image = rec["tags"][0] if rec.get("tags") else metadata.get("docker_tag", "")
-        if not image or not self._image_exists(image):
-            if rec.get("tag_only"):
-                messagebox.showerror("Inspect base", f"Docker image is not available locally: {image}\nLoad a saved TAR in Tab 1, or restore the image in Docker Desktop.")
+        archive = Path(str(rec.get('path') or '')) if not rec.get('tag_only') else None
+        if archive is None or not archive.is_file():
+            if not image or not self._image_exists(image):
+                messagebox.showerror('Inspect image',
+                                     'The Docker image is not loaded. Use the single Load Docker image from TAR button in Tab 1.',
+                                     parent=self)
                 return
-            if not self._load_archive(rec, "inspection"):
-                return
-            image = rec["tags"][0] if rec.get("tags") else ""
-        if not image:
-            messagebox.showerror("Inspect base", "The archive was loaded but no Docker tag could be determined.")
+        elif not image:
+            messagebox.showerror('Inspect image', 'The TAR has no selected image tag. Load it through Tab 1 first.', parent=self)
+            return
+        image_id = self._docker_image_id(image)
+        if archive is None and not image_id:
+            messagebox.showerror('Inspect image', 'Docker could not identify the selected image. Load it through Tab 1.', parent=self)
             return
 
+        self._inspection_active = True
+        self._inspection_target = image
+        self._inspection_cancel = threading.Event()
+        self._inspection_start = time.monotonic()
+        self._inspection_last_update = self._inspection_start
+        self._inspection_succeeded = False
+        self._scan_previous_package_count = 0
+        with self._scan_data_lock:
+            self._scan_counts = {'EXEC': 0, 'PKG': 0, 'PIP': 0, 'RPKG': 0, 'JAR': 0}
+            self._scan_totals = {}
+            self._scan_recent_packages = []
+            self._scan_last_name = ''
+            self._scan_detail = ''
+        self._inspection_phase = 'Read saved image manifest' if archive is not None else 'Prepare Docker filesystem export'
+        self._inspection_stage_index = 0
+        self._inspection_layer = (0, 0)
+        self.scan_stop.configure(state='normal')
+        self.scan_progress['value'] = 0
+        self._scan_clock()
         self.out.delete("1.0", "end")
         self._log(f"Inspecting base image: {image}\nSource: {rec['path'] or 'Docker tag (no TAR required)'}\n\n")
-        self.inventory_summary.set(f"Inspecting {image} ...")
+        self._log('Reading the saved TAR filesystem directly, or using Docker export without starting an application.\n')
+        self.inventory_summary.set(f"INSPECTION IN PROGRESS: {image}\nThe runtime contents have not yet been verified. Do not interpret missing results as an empty image.")
         self.inventory_tree.delete(*self.inventory_tree.get_children())
+        self.inventory_tree.insert('', 'end', values=('', '<scanning Docker image; wait for completion>', '', ''))
 
         script = self._inspection_script()
 
         def work():
             try:
-                p = self._run(["docker", "run", "--rm", "--pull=never", "--network=none", "--entrypoint", "/bin/sh", image, "-c", script])
-                raw_text = p.stdout
-                err_text = p.stderr
-                if p.returncode != 0 and not raw_text.strip():
-                    result = None
-                    error = (
-                        f"Inspection container exited with code {p.returncode}.\n"
-                        f"{err_text}\n"
-                        "This image may not contain a POSIX shell. Component inspection requires a shell-capable base."
-                    )
+                if archive is not None and archive.is_file():
+                    result = inspect_saved_tar(archive, image=image, report=self._scan_emit,
+                                               cancel=self._inspection_cancel, timeout=300)
+                    if not result.get('image_id'):
+                        raise RuntimeError('The saved TAR has no identifiable Docker image configuration.')
                 else:
-                    result = self._parse_inspection_output(raw_text, image)
-                    error = ""
+                    result = inspect_tag_via_export(image, report=self._scan_emit,
+                                                    cancel=self._inspection_cancel, timeout=300)
+                if not self._has_complete_inspection(result):
+                    raise RuntimeError('The filesystem inspection did not produce valid inventory metadata.')
+                if archive is None:
+                    result['image_id'] = image_id
+                error = ''
+            except (InterruptedError, InspectionCancelled, InspectionTimeout) as exc:
+                result = None
+                error = str(exc)
+            except subprocess.TimeoutExpired:
+                result = None
+                error = 'Docker image preparation exceeded its timeout. The previous inventory remains unchanged.' 
             except Exception as e:
                 result = None
-                error = str(e)
+                error = str(e)[:1000]
 
             def finish():
+                self._inspection_succeeded = result is not None
+                self._finish_scan_ui()
                 if result is None:
+                    self.scan_status.set('Inspection stopped or failed. Installed software not verified.')
                     self._log(error + "\n")
-                    self.inventory_summary.set("Inspection failed. See the activity log.")
+                    previous = (rec.get("metadata") or {}).get("inspection")
+                    if self._has_complete_inspection(previous) and previous.get("image_id") == image_id:
+                        self._show_record_inventory(rec)
+                        self._log("Inspection failed; the previously verified inventory of this image remains visible.\n")
+                    else:
+                        self.inventory_summary.set("INSPECTION FAILED. Installed programs are UNKNOWN, not absent. See the activity log.")
+                        self.inventory_tree.delete(*self.inventory_tree.get_children())
+                        self.inventory_tree.insert('', 'end', values=('', '<inspection failed; installed software unknown>', '', ''))
                     return
+                selected_tag = str(self.app.state.get('base_image' if rec.get('role') == 'runtime' else 'builder_image') or '').strip()
+                if rec.get('tag_only') and selected_tag != image:
+                    self._log('Inspection completed for an image no longer selected. Results were discarded: ' + image + '\n')
+                    return
+                local_id = self._docker_image_id(image)
+                actual_id = result.get('image_id', '')
+                if rec.get('tag_only') and local_id != image_id:
+                    self._log('The Docker tag changed during inspection; results were discarded. Refresh the inventory again.\n')
+                    self.inventory_summary.set('Image tag changed during inspection. Run Inspect / refresh selected again.')
+                    return
+                archive_not_loaded = False
+                if archive is not None:
+                    try:
+                        archive_not_loaded = not docker_image_matches_tar(archive, image, cancel=self._inspection_cancel)
+                    except (ValueError, OSError, tarfile.TarError, RuntimeError) as check_error:
+                        archive_not_loaded = True
+                        self._log('Image identity check could not be completed: ' + str(check_error) + '\n')
+                if archive_not_loaded:
+                    self._log('WARNING: The TAR inventory was read successfully, but its image is not loaded under the selected Docker tag. '
+                              'Load the TAR using Tab 1 before trying to build from it.\n')
 
                 metadata_now = (dict(rec.get("metadata") or {}) if rec.get("tag_only") else self._read_sidecar(rec["path"]))
                 probes = self._persistent_version_probes(metadata_now)
@@ -1116,12 +1647,23 @@ done
                 metadata_now["inspection"] = result
                 if not rec.get("tag_only"):
                     try:
+                        archive_stat = Path(rec["path"]).stat()
+                        metadata_now['archive_stamp'] = {'size': archive_stat.st_size, 'mtime_ns': archive_stat.st_mtime_ns}
                         self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
                     except Exception as e:
                         self._log(f"WARNING: could not update metadata sidecar: {e}\n")
 
                 rec["metadata"] = metadata_now
                 self._show_record_inventory(rec)
+                duration = int(time.monotonic() - self._inspection_start)
+                self.scan_status.set(
+                    f'Inspection complete in {duration}s — '
+                    f'{len(result.get("executables", []))} executables, '
+                    f'{len(result.get("packages", {}).get("os", []))} OS packages verified')
+                if archive_not_loaded:
+                    self.scan_status.set(self.scan_status.get() + ' | TAR INSPECTED, DOCKER TAG NOT MATCHED')
+                    self.inventory_summary.set(self.inventory_summary.get() + '\nTAR contents inspected; load the TAR in Tab 1 before building.')
+                self.scan_found_text.set(self.scan_status.get())
                 self._log(
                     f"Inspection complete.\n"
                     f"Executable commands/files: {len(result.get('executables', []))}\n"
@@ -1254,10 +1796,9 @@ done
             inspection = metadata.get("inspection") if isinstance(metadata.get("inspection"), dict) else {}
             if inspection:
                 self._apply_persistent_versions(metadata, inspection)
-            tags = self._archive_tags(archive)
             metadata_tag = str(metadata.get("docker_tag", "") or "").strip()
-            if not tags and metadata_tag:
-                tags = [metadata_tag]
+            selected_tag = (selected_runtime_tag if role == 'runtime' else selected_builder_tag)
+            tags = [selected_tag] if selected_tag else ([metadata_tag] if metadata_tag else self._archive_tags(archive))
             records.append({"path": str(archive), "tags": tags, "size": archive.stat().st_size, "metadata": metadata})
         self._library_records = records
 
@@ -1393,50 +1934,35 @@ done
 
     def _load_archive(self, rec, role):
         if not rec:
-            messagebox.showerror("Base", f"Select a {role} archive first.")
+            messagebox.showerror('Base', f'No {role} archive was selected.', parent=self)
             return False
-        archive = Path(rec["path"])
-        if not archive.exists():
-            messagebox.showerror("Base", f"Archive does not exist:\n{archive}")
+        archive = Path(rec.get('path') or '')
+        if not archive.is_file():
+            messagebox.showerror('Base', f'The selected archive does not exist: {archive}', parent=self)
             return False
-        expected = rec["tags"][0] if rec["tags"] else ""
-        if expected and self._image_exists(expected):
-            self._log(f"{role.title()} image already present in Docker: {expected}\n")
-            if role == "runtime":
-                self.runtime_status.config(text="LOADED", fg="#1E8449")
-            elif role == "builder":
-                self.builder_status.config(text="LOADED", fg="#1E8449")
-            return True
-
-        before = {row[0] for row in self._local_image_choices()}
-        self._log(f"Loading external archive temporarily:\n{archive}\n")
-        p = self._run(["docker", "load", "-i", str(archive)])
-        self._log(p.stdout + p.stderr)
-        if p.returncode != 0:
-            messagebox.showerror("docker load", f"Failed to load {archive.name}. See activity log.")
+        expected = (rec.get('tags') or [''])[0]
+        if not expected:
+            messagebox.showerror('Base', 'The selected TAR has no image tag. Load it in Tab 1.', parent=self)
             return False
-
-        after = {row[0] for row in self._local_image_choices()}
-        newly_loaded = sorted(after - before)
-        known = set(self.app.state.get("gui_loaded_images", []))
-        known.update(newly_loaded)
-        self.app.state["gui_loaded_images"] = sorted(known)
-
-        if not rec["tags"]:
-            rec["tags"] = self._archive_tags(archive)
-        if not rec["tags"] and newly_loaded:
-            rec["tags"] = [newly_loaded[0]]
-        tag = rec["tags"][0] if rec["tags"] else ""
-        if role == "runtime":
-            self.runtime_tag.set(tag)
-            self.app.state["base_image"] = tag
-            self.runtime_status.config(text="LOADED", fg="#1E8449")
-        elif role == "builder":
-            self.builder_tag.set(tag)
-            self.app.state["builder_image"] = tag
-            self.builder_status.config(text="LOADED", fg="#1E8449")
-        self._log(f"Temporary Docker tag for {role}: {tag or '<unknown>'}\n")
-        self.refresh_selected_archives()
+        try:
+            verified = docker_image_matches_tar(archive, expected)
+        except (OSError, ValueError, RuntimeError, tarfile.TarError) as exc:
+            self._log('Cannot verify the selected TAR: ' + str(exc) + '\n')
+            verified = False
+        if not verified:
+            messagebox.showinfo('Docker image not loaded',
+                                'Use the single Load Docker image from TAR button in Tab 1. '
+                                'Tab 2 will not import or replace images automatically.', parent=self)
+            return False
+        if role == 'runtime':
+            self.runtime_tag.set(expected)
+            self.app.state['base_image'] = expected
+            self.runtime_status.config(text='LOADED — VERIFIED', fg='#1E8449')
+        elif role == 'builder':
+            self.builder_tag.set(expected)
+            self.app.state['builder_image'] = expected
+            self.builder_status.config(text='LOADED — VERIFIED', fg='#1E8449')
+        self._log(f'{role.title()} TAR matches the Docker filesystem: {expected}\n')
         return True
 
     def load_selected_bases(self):

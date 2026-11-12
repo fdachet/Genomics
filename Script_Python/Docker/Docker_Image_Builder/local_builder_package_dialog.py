@@ -1,5 +1,4 @@
 import copy
-import json
 import queue
 import re
 import threading
@@ -8,7 +7,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from local_builder_package_install import install_local_packages_in_builder, preflight_local_builder_packages
-from docker_image_checkpoint import checkpoint_sidecar_path, read_checkpoint_metadata, save_image_checkpoint
+from final_image_updates import build_full_image_now, stage_local_packages
 from project_state import effective_builder_image
 
 
@@ -110,7 +109,6 @@ class LocalBuilderPackageDialog(tk.Toplevel):
         self.builder_caption = tk.StringVar(value='Current builder: ' + (self.builder or 'NOT SELECTED'))
         self.runtime_caption = tk.StringVar(value='Current runtime: ' + (self.runtime or 'NOT SELECTED'))
         self.also_other = tk.BooleanVar(value=False)
-        self.save_image_tar = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value='Choose the local packages to install in the selected ' + target + '.')
         self.title('Install local package into ' + target)
         self.geometry('940x635')
@@ -154,12 +152,8 @@ class LocalBuilderPackageDialog(tk.Toplevel):
         self.both_checkbox = tk.Checkbutton(option_frame, text='Also use the new image as the ' + alternate,
                                              variable=self.also_other, bg='#E8F8F5', fg='#0E6655',
                                              state='normal' if self.share_option_available else 'disabled')
-        self.both_checkbox.pack(anchor='w')
-        self.tar_checkbox = tk.Checkbutton(
-            option_frame, text='Save updated Docker image to a reusable TAR file after installation',
-            variable=self.save_image_tar, bg='#E8F8F5', fg='#0E6655',
-        )
-        self.tar_checkbox.pack(anchor='w')
+        tk.Label(option_frame, text='No intermediate TAR is exported. Runtime packages are applied to the complete final Docker image in Tab 6.',
+                 bg='#E8F8F5', fg='#21618C', wraplength=880).pack(anchor='w')
         tk.Label(option_frame, text='Installation is offline. Include any required dependency archives in the selection. '
                  'Click Check dependencies to see what the selected ' + target + ' is missing before installation. '
                  'Package installation scripts execute inside Docker; choose trusted files.',
@@ -272,7 +266,6 @@ class LocalBuilderPackageDialog(tk.Toplevel):
         self.add_button.configure(state='disabled' if busy else 'normal')
         self.remove_button.configure(state='disabled' if busy else 'normal')
         self.both_checkbox.configure(state='disabled' if busy or not self.share_option_available else 'normal')
-        self.tar_checkbox.configure(state='disabled' if busy else 'normal')
         self.close_button.configure(text='Stop' if busy else 'Close', command=self._close)
         if busy:
             self.cancel_event.clear()
@@ -292,22 +285,25 @@ class LocalBuilderPackageDialog(tk.Toplevel):
         if not self.files:
             messagebox.showwarning('No local packages', 'Click Browse package file(s) and choose at least one Linux package archive.', parent=self)
             return
-        tar_path = ''
-        if self.save_image_tar.get():
-            initial_dir = str(self.app.state.get('export_image_dir') or self.app.state.get('project_dir') or '').strip()
-            if not initial_dir or not Path(initial_dir).is_dir():
-                initial_dir = str(Path.cwd())
-            suggested = re.sub(r'[^A-Za-z0-9_.-]', '_', self.source) + '_with_local_packages.tar'
-            tar_path = filedialog.asksaveasfilename(
-                parent=self, title='Choose where to save the updated Docker image TAR',
-                initialdir=initial_dir, initialfile=suggested, defaultextension='.tar',
-                filetypes=[('Docker image archive', '*.tar')],
-            )
-            if not tar_path:
+        if self.target_role == 'runtime':
+            if getattr(self.app.build_tab, '_busy', False):
+                messagebox.showerror('Final image busy', 'Wait for the current final-image build to finish.', parent=self)
                 return
+            if not messagebox.askyesno('Install into COMPLETE Docker image',
+                    'The selected local packages will be included directly in the FULL image built by Tab 6.\n\n' +
+                    '\n'.join(Path(file).name for file in self.files) +
+                    '\n\nNo intermediate image or TAR will be exported.\n\n' +
+                    'Build the complete Docker image now?', parent=self):
+                return
+            try:
+                stage_local_packages(self.app.state, self.files)
+                self._close()
+                build_full_image_now(self.app)
+            except (ValueError, RuntimeError) as exc:
+                messagebox.showerror('Final image update', str(exc), parent=self.app)
+            return
         runtime_changes = self.target_role == 'runtime' or self.also_other.get()
-        archive_note = ('\n\nThe updated image will also be saved to:\n' + tar_path if tar_path else
-                        '\n\nThe updated image will be available through its Docker tag, without a TAR export.')
+        archive_note = '\n\nNo package-stage TAR is created. Only the complete application image is exported from Tab 6.'
         shared_note = ('\nThe previous image will stay selected as the builder.'
                        if self.target_role == 'runtime' and not self.also_other.get() and
                        self.builder == self.runtime else '')
@@ -330,19 +326,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
             try:
                 result = install_local_packages_in_builder(image, files, self.cancel_event,
                                                            lambda line: self.messages.put(('log', line)), role=role)
-                tar_error = ''
-                if tar_path:
-                    self.messages.put(('log', 'Saving the installed Docker image as a reusable TAR...'))
-                    try:
-                        checkpoint = save_image_checkpoint(
-                            result['builder_image'], tar_path, cancel=self.cancel_event,
-                            progress=lambda line: self.messages.put(('log', line)),
-                        )
-                        result['saved_tar'] = checkpoint['archive']
-                    except Exception as exc:
-                        tar_error = str(exc)
-                        self.messages.put(('log', 'TAR EXPORT FAILED: ' + tar_error))
-                self.messages.put(('success', (result, both, tar_error)))
+                self.messages.put(('success', (result, both, '')))
             except Exception as exc:
                 self.messages.put(('failure', str(exc)))
 
@@ -384,7 +368,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
                 messagebox.showerror('Dependency check failed', data[-3000:], parent=self)
                 done = True
             elif name == 'success':
-                result, both, tar_error = data
+                result, both, _ = data
                 try:
                     self._publish(result, both)
                     self._append('SUCCESS: updated ' + self.target_role + ' ' + result['builder_image'])
@@ -393,9 +377,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
                                         'New ' + self.target_role + ': ' + result['builder_image'] + '\n\n' +
                                         ('This image is now used for both builder and runtime.' if both else
                                          'The other image selection was preserved.') +
-                                        ('\n\nDocker TAR saved: ' + result['saved_tar'] if result.get('saved_tar') else
-                                         '\n\nTAR could not be saved: ' + tar_error if tar_error else
-                                         '\n\nNo TAR export selected.') +
+                                        '\n\nNo intermediate TAR created. Export the complete application image from Tab 6.' +
                                         '\n\nThe package list is available in Tab 2.', parent=self)
                 except Exception as exc:
                     self._append('DOCKER IMAGE CREATED, BUT PROJECT UPDATE FAILED: ' + str(exc))
@@ -415,30 +397,6 @@ class LocalBuilderPackageDialog(tk.Toplevel):
     def _publish(self, result, both):
         state = self.app.state
         publish_local_package_install(state, result, self.target_role, both)
-        saved_tar = str(result.get('saved_tar') or '').strip()
-        if saved_tar:
-            image = str(result['builder_image'])
-            if self.target_role == 'runtime':
-                inventory = state.get('base_inventory') or {}
-                system = state.get('base_system') or {}
-            else:
-                inventory = state.get('builder_inventory') or {}
-                system = state.get('builder_system') or {}
-            metadata = read_checkpoint_metadata(saved_tar)
-            metadata['docker_tag'] = image
-            metadata['inspection'] = copy.deepcopy(inventory) if isinstance(inventory, dict) else {}
-            if isinstance(system, dict) and system:
-                metadata['inspection']['system'] = copy.deepcopy(system)
-            try:
-                checkpoint_sidecar_path(saved_tar).write_text(json.dumps(metadata, indent=2), encoding='utf-8')
-            except OSError as exc:
-                self._append('WARNING: TAR was saved, but its metadata could not be updated: ' + str(exc))
-            changes = {}
-            if self.target_role == 'runtime' or both:
-                changes['runtime_base_archive'] = saved_tar
-            if self.target_role == 'builder' or both:
-                changes['builder_base_archive'] = saved_tar
-            state.update(changes)
         self.builder = effective_builder_image(state)
         self.runtime = str(state.get('base_image') or '')
         self.source = self.builder if self.target_role == 'builder' else self.runtime

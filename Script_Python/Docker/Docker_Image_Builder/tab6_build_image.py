@@ -10,6 +10,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog
 from build_artifacts import read_record, sha256_file
+from runtime_source_status import runtime_source_status, runtime_component_status
 from component_file_types import validate_component_type
 from network_policy import POLICY_OFFLINE, normalize_policy, package_names, inspect_packages, permission_message, require_local_image
 from java_runtime_checker import probe_java
@@ -24,7 +25,10 @@ from image_component_inventory import inspect_image_components
 from revision_dependencies import dependency_impact, normalize_satisfactions, projected_java_versions
 from image_compaction import show_compaction_dialog
 from local_package_catalog import local_installation_plan, installed_packages
-from docker_image_checkpoint import save_image_checkpoint
+from docker_image_checkpoint import save_full_image_to_tar
+from final_image_updates import pending_online_requests
+from repository_package_install import repository_install_command
+from workflow_toolbar import add_more_menu
 
 
 class BuildTab(tk.Frame):
@@ -43,9 +47,9 @@ class BuildTab(tk.Frame):
         self._last_plan = None
         self._last_environment = None
         self._generation_issues = []
-        tk.Label(self, text='6 — ASSEMBLE FINAL DOCKER IMAGE', bg='#1E8449', fg='white',
+        tk.Label(self, text='6 — BUILD COMPLETE DOCKER IMAGE', bg='#1E8449', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
-        tk.Label(self, text='Uses the runtime from Tab 1, existing binaries configured in Tab 3, compiled outputs from Tab 4, and library requirements from Tab 5. Does not recompile sources.',
+        tk.Label(self, text='One action: assemble the runtime, binaries, Tab 4 compiled outputs and approved packages; save the complete Docker image as a named TAR; automatically use it as the new editable base. Source compilation remains in Tab 4.',
                  bg='#D5F5E3', fg='#145A32', anchor='w', wraplength=1250, padx=10, pady=9).pack(fill='x', padx=12, pady=(8, 4))
         tk.Label(self, textvariable=self.summary, bg='#E9F7EF', anchor='w', justify='left').pack(fill='x', padx=12, pady=8)
         form = tk.Frame(self, bg='#E9F7EF')
@@ -55,20 +59,15 @@ class BuildTab(tk.Frame):
         tk.Entry(form, textvariable=self.image).grid(row=0, column=1, sticky='ew', padx=8)
         tk.Label(form, text='Build context folder:', bg='#E9F7EF').grid(row=1, column=0, sticky='w', pady=4)
         tk.Entry(form, textvariable=self.context).grid(row=1, column=1, sticky='ew', padx=8)
-        tk.Button(form, text='Browse', command=self.browse).grid(row=1, column=2)
         controls = tk.Frame(self, bg='#E9F7EF')
         controls.pack(fill='x', padx=12, pady=8)
-        tk.Button(controls, text='Generate Dockerfile', command=self.generate, bg='#82E0AA').pack(side='left', padx=3)
-        tk.Button(controls, text='Show Dockerfile', command=self.show, bg='#58D68D').pack(side='left', padx=3)
-        self.build_button = tk.Button(controls, text='Build Final Image', command=self.build, bg='#239B56', fg='white')
+        self.build_button = tk.Button(
+            controls, text='Compile Docker Image and save to .tar archive',
+            command=self.build, bg='#239B56', fg='white',
+            font=('Segoe UI', 11, 'bold'), padx=18, pady=7)
         self.build_button.pack(side='left', padx=3)
-        tk.Button(controls, text='Check required OS packages', command=self.check_required_packages, bg='#A9DFBF').pack(side='left', padx=3)
-        tk.Button(controls, text='Refresh', command=self.refresh_from_project_state, bg='#A9DFBF').pack(side='left', padx=3)
-        tk.Button(controls, text='Revise Built Image', command=self.revise_built_image, bg='#AED6F1').pack(side='left', padx=3)
-        tk.Button(controls, text='Compact Built Image', command=self.compact_built_image, bg='#F9E79F').pack(side='left', padx=3)
-        self.save_built_tar_button = tk.Button(controls, text='Save Built Image to TAR', command=self.save_built_image_to_tar, bg='#117A65', fg='white')
-        self.save_built_tar_button.pack(side='left', padx=3)
-        tk.Button(controls, text='Clear log', command=lambda: self.out.delete('1.0', 'end'), bg='#D6DBDF').pack(side='left', padx=3)
+        self._archive_destination = ''
+        self._archive_overwrite = False
         self.policy_status = tk.StringVar()
         tk.Label(self, textvariable=self.policy_status, bg='#E9F7EF', anchor='w').pack(fill='x', padx=16)
         tk.Label(self, textvariable=self.status, bg='#E9F7EF', fg='#145A32', font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', padx=16, pady=5)
@@ -93,65 +92,6 @@ class BuildTab(tk.Frame):
         if path:
             self.context.set(path)
 
-    def save_built_image_to_tar(self):
-        image = str(self.app.state.get('built_image', '') or '').strip()
-        if not image:
-            messagebox.showerror('Save Docker image', 'Build an image first, or use Tab 1 to save the selected runtime image.', parent=self)
-            return
-        if self._busy:
-            messagebox.showinfo('Save Docker image', 'Wait until the current image build finishes.', parent=self)
-            return
-        folder = str(self.app.state.get('export_image_dir', '') or self.app.state.get('project_dir', '') or '').strip()
-        if not folder or not Path(folder).is_dir():
-            folder = str(Path.cwd())
-        filename = re.sub(r'[^A-Za-z0-9_.-]', '_', image) + '.tar'
-        chosen = filedialog.asksaveasfilename(
-            parent=self, title='Save this already-built Docker image as a reusable TAR',
-            initialdir=folder, initialfile=filename, defaultextension='.tar',
-            filetypes=[('Docker image archive', '*.tar')],
-        )
-        if not chosen:
-            return
-        self.save_built_tar_button.configure(state='disabled')
-        self.out.insert('end', f'Exporting existing image {image} to {chosen}\n')
-        self.out.see('end')
-
-        def worker():
-            def progress(line):
-                try:
-                    self.after(0, lambda message=line: (self.out.insert('end', message), self.out.see('end')))
-                except RuntimeError:
-                    pass
-            try:
-                result = save_image_checkpoint(image, chosen, progress=progress)
-                error = ''
-            except Exception as exc:
-                result = None
-                error = str(exc)
-
-            def finish():
-                if not self.winfo_exists():
-                    return
-                self.save_built_tar_button.configure(state='normal')
-                if error:
-                    self.out.insert('end', 'TAR export failed: ' + error + '\n')
-                    messagebox.showerror('TAR export failed', error, parent=self)
-                else:
-                    self.out.insert('end', 'Saved reusable TAR: ' + result['archive'] + '\n')
-                    messagebox.showinfo(
-                        'Docker image saved',
-                        'Saved the existing image without rebuilding it.\n\n' + result['archive'] +
-                        '\n\nTo reuse it: Tab 1 → Load TAR as runtime (select both roles if appropriate).',
-                        parent=self,
-                    )
-                self.out.see('end')
-            try:
-                self.after(0, finish)
-            except RuntimeError:
-                pass
-
-        threading.Thread(target=worker, daemon=True).start()
-
     def _components(self):
         return [c for c in self.app.state.get('components', []) if c.get('enabled', True)]
 
@@ -161,7 +101,9 @@ class BuildTab(tk.Frame):
         if tag:
             self.image.set(tag)
         elif not self.image.get().strip():
-            self.image.set('component-toolbox:latest')
+            project = Path(str(state.get('project_dir') or Path.cwd()))
+            suggested = re.sub(r'[^a-z0-9_.-]+', '-', project.name.lower()).strip('.-')
+            self.image.set((suggested or 'docker-image') + ':latest')
         folder = str(state.get('generated_context', '') or '').strip()
         if folder:
             self.context.set(folder)
@@ -169,7 +111,7 @@ class BuildTab(tk.Frame):
             project = str(state.get('project_dir', '') or '').strip()
             if project:
                 self.context.set(str(Path(project) / '_generated_docker_context'))
-        self.policy_status.set('Build mode: ' + normalize_mode(state.get('build_mode')).upper() + '    |    OS packages: LOCAL FILES ONLY' + '    |    Network: ' + ('OFFLINE' if normalize_policy(state.get('package_download_policy')) == POLICY_OFFLINE else 'APPROVAL FOR OPTIONAL LANGUAGE/CUSTOM DOWNLOADS'))
+        self.policy_status.set('Build mode: ' + normalize_mode(state.get('build_mode')).upper() + '    |    OS packages: LOCAL + APPROVED ONLINE IN FINAL IMAGE' + '    |    Network: ' + ('OFFLINE' if normalize_policy(state.get('package_download_policy')) == POLICY_OFFLINE else 'APPROVAL REQUIRED FOR DOWNLOADS'))
         components = self._components()
         source = [c for c in components if str(c.get('kind', '')).lower() == 'source']
         ready = sum(bool(read_record(state, c)[0]) for c in source)
@@ -180,7 +122,7 @@ class BuildTab(tk.Frame):
         languages = ', '.join(lang for lang, key in [('Java', 'java_version'), ('Python', 'python_version'), ('R', 'r_version'), ('Perl', 'perl_version')] if env_data.get(key))
         self.summary.set(f'Runtime: {state.get("base_image", "") or "NOT SELECTED"}    |    '
                          f'Compiled sources: {ready}/{len(source)} ready    |    '
-                         f'Existing binaries/files: {len(binaries)}    |    OS packages: {len(packages)}    |    Removals: {len(removals)}    |    Runtimes: {languages or "auto / none"}')
+                         f'Existing binaries/files: {len(binaries)}    |    OS packages: {len(packages)}    |    Online installs: {len(state.get("final_online_package_requests") or [])}    |    Removals: {len(removals)}    |    Runtimes: {languages or "auto / none"}')
 
     def _check_context(self, context, components):
         marker = context / '.docker_component_builder_managed.json'
@@ -240,7 +182,8 @@ class BuildTab(tk.Frame):
             raise ValueError(f'{name}: ELF CPU architecture {machine} does not match runtime {architecture}.')
 
     def _destination(self, component):
-        value = str(component.get('destination', '') or '').strip()
+        from component_presets import suggested_destination
+        value = str(component.get('destination', '') or suggested_destination(component.get('kind'), component.get('name'))).strip()
         if not value.startswith('/') or any(part in ('.', '..') for part in value.split('/')):
             raise ValueError(f'Invalid image destination for {component.get("name", "")}: {value or "<blank>"}')
         return posixpath.normpath(value).rstrip('/') + '/'
@@ -331,6 +274,8 @@ class BuildTab(tk.Frame):
             plan = self._plan()
             removals = normalize_removals(self.app.state.get('image_removals'))
             packages = remove_deferred_packages(plan['packages'], removals)
+            online_requests = pending_online_requests(self.app.state, image)
+            online_names = {name.lower() for request in online_requests for name in request['packages']}
             inspection = inspect_packages(image, packages)
             self._package_inspection = inspection
         except Exception as exc:
@@ -342,7 +287,11 @@ class BuildTab(tk.Frame):
         lines.extend(['', 'Missing (' + str(len(inspection['missing'])) + '):'])
         lines.extend('  ' + item for item in inspection['missing'])
         lines.append('')
-        local = local_installation_plan(self.app.state, packages, plan['manager'])
+        local = local_installation_plan(self.app.state, [name for name in packages if name.lower() not in online_names], plan['manager'])
+        lines += ['', 'ONLINE PACKAGES REQUESTED FOR COMPLETE IMAGE IN TAB 3:']
+        lines.extend('  ' + name for request in online_requests for name in request['packages'])
+        if not online_requests:
+            lines.append('  None')
         lines += ['', 'LOCAL PACKAGE FILES AVAILABLE FOR OFFLINE INSTALLATION:']
         for name, archives in local['local'].items():
             lines.extend('  ' + name + ': ' + str(archive) for archive in archives)
@@ -365,7 +314,7 @@ class BuildTab(tk.Frame):
         if plan['target_java']:
             lines.append('  Java selection: ' + plan['selection_reason'])
         lines.append('Detected application requirements are not installed automatically. You must select packages in Tab 3.')
-        if not packages:
+        if not packages and not online_requests:
             lines.append('No OS packages are declared. This does not verify application dependencies or Java compatibility.')
         self.out.delete('1.0', 'end')
         self.out.insert('end', '\n'.join(lines))
@@ -398,6 +347,9 @@ class BuildTab(tk.Frame):
                     if code == 0:
                         self.app.state['built_image'] = image
                         self.app.state['image_name'] = image
+                        container_settings = dict(self.app.state.get('container_config') or {})
+                        container_settings['image'] = image
+                        self.app.state['container_config'] = container_settings
                         self.app.state['last_build_report'] = report
                         self.app.state['image_removals'] = []
                         history = list(self.app.state.get('build_history', []))
@@ -407,6 +359,35 @@ class BuildTab(tk.Frame):
                         validator = getattr(self.app, 'validation_tab', None)
                         if validator is not None:
                             validator.refresh_from_project_state()
+                        archive = str(report.get('full_tar_archive') or '')
+                        if archive:
+                            try:
+                                self._activate_saved_image_as_base(image, archive, report)
+                            except Exception as exc:
+                                self.status.set('TAR SAVED — FAILED TO ACTIVATE NEW RUNTIME: ' + str(exc))
+                                messagebox.showerror('Runtime activation failed',
+                                                     'The image TAR was saved, but its automatic selection as the new base failed. '
+                                                     'The application will remain open.\n\n' + str(exc), parent=self)
+                                self.app._build_finished_for_exit(False)
+                            else:
+                                self.app._build_finished_for_exit(True)
+                        else:
+                            self.status.set('IMAGE CREATED — TAR EXPORT FAILED; original base preserved')
+                            messagebox.showerror(
+                                'TAR export failed',
+                                'Docker built the image, but no complete TAR was saved. '
+                                'The previous selected base remains active. Review the build log.',
+                                parent=self)
+                            self.app._build_finished_for_exit(False)
+                    else:
+                        self.app._build_finished_for_exit(False)
+                elif event[0] == 'full_tar_saved':
+                    _, image, archive = event
+                    if str(self.app.state.get('built_image') or '') == image:
+                        self.app.state['last_full_image_tar'] = archive
+                    self.out.insert('end', 'FULL IMAGE ARCHIVE: ' + archive + '\n')
+                elif event[0] == 'full_tar_error':
+                    self.out.insert('end', 'WARNING: Complete Docker image built, but TAR export failed: ' + event[1] + '\n')
         except queue.Empty:
             pass
         if self._busy or not self._messages.empty():
@@ -438,22 +419,34 @@ class BuildTab(tk.Frame):
         mode = normalize_mode(state.get('build_mode'))
         manifest = []
         issues = []
+        inherited_components = []
         try:
             for component in components:
                 kind = str(component.get('kind', '') or '').strip().lower()
                 name = str(component.get('name', '') or '').strip()
                 if kind == 'source':
+                    inherited = runtime_source_status(state, component)
                     record, detail = read_record(state, component)
-                    if not record:
-                        if mode == STRICT:
-                            messagebox.showerror('Compilation required', f'{name}: {detail}', parent=self)
-                            return False
-                        issues.append(name + ': compiled source unavailable: ' + detail)
+                    if inherited and inherited.get('verified') and (not record or (inherited.get('sha256') and inherited['sha256'] == record.get('sha256'))):
+                        inherited_components.append({'name': name, 'path': inherited['path'], 'image': base,
+                                                   'verified': inherited['verified']})
                         continue
+                    if not record:
+                        messagebox.showerror(
+                            'Compilation required',
+                            name + ': ' + str(detail) + '\n\n'
+                            'Compile every enabled source in Tab 4 before assembling an image.',
+                            parent=self)
+                        return False
                     self._check_binary_architecture(Path(record['artifact']), component)
                     manifest.append((component, Path(record['artifact']), record))
                 elif kind in self.FILE_KINDS:
+                    inherited = runtime_component_status(state, component)
                     path = Path(str(component.get('source', '') or '').strip()).expanduser()
+                    if inherited and inherited.get('verified') and (not path.exists() or (path.is_file() and inherited.get('sha256') and sha256_file(path) == inherited['sha256'])):
+                        inherited_components.append({'name': name, 'path': inherited['path'], 'image': base,
+                                                   'verified': inherited['verified']})
+                        continue
                     if not path.exists():
                         if mode == STRICT:
                             messagebox.showerror('Missing file', f'{name}: {path}', parent=self)
@@ -474,6 +467,9 @@ class BuildTab(tk.Frame):
             return False
         context = Path(self.context.get().strip()).expanduser().resolve()
         try:
+            online_requests = pending_online_requests(state, base)
+            if online_requests and mode == ASSEMBLY:
+                raise ValueError('Online packages were selected in Tab 3. Change build mode from ASSEMBLY to PERMISSIVE or STRICT so they can be installed in the full image.')
             self._check_context(context, components)
             lines = [f'FROM {base} AS final', 'USER root', '']
             if mode != STRICT:
@@ -497,11 +493,14 @@ class BuildTab(tk.Frame):
                     env['language_packages'][field] = [x for x in env['language_packages'][field] if x.lower() not in removed_names]
             self._last_environment = env
             self._last_plan = plan
+            issues.extend(env.get('unresolved') or [])
             if mode != STRICT:
                 issues.extend(plan.get('notes') or [])
             packages = plan['packages']
             install_now = self._will_install_now(mode)
-            local_plan = local_installation_plan(state, packages, plan['manager'])
+            online_package_names = {name.lower() for request in online_requests for name in request['packages']}
+            local_only_packages = [name for name in packages if name.lower() not in online_package_names]
+            local_plan = local_installation_plan(state, local_only_packages, plan['manager'])
             if local_plan['errors']:
                 if mode == STRICT:
                     raise ValueError('Required OS packages cannot be installed locally:\n' + '\n'.join(local_plan['errors']))
@@ -518,7 +517,28 @@ class BuildTab(tk.Frame):
                 lines.append('RUN mkdir -p /opt/component-builder/local-packages')
                 for archive in staged_archives:
                     lines.append('COPY ' + json.dumps([archive['context'], archive['target']]))
-                lines.extend(optional_lines(self._package_lines([x['target'] for x in staged_archives], plan['manager']), 'Offline local OS package installation', False, mode))
+                mandated = set(state.get('final_local_package_paths') or [])
+                exact = [x['target'] for x in staged_archives if x['source'] in mandated]
+                optional = [x['target'] for x in staged_archives if x['source'] not in mandated]
+                if optional:
+                    lines.extend(optional_lines(self._package_lines(optional, plan['manager']), 'Offline local OS package installation', False, mode))
+                if exact:
+                    lines.extend(self._package_lines(exact, plan['manager']))
+            for index, request in enumerate(online_requests, start=1):
+                info = dict(request['info'])
+                if info.get('image') != base:
+                    raise ValueError('Online package request ' + str(index) + ' was prepared for another runtime. Clear and reselect its packages in Tab 3.')
+                command = repository_install_command(
+                    info, request['packages'], use_archive=request.get('use_archive', False),
+                    allow_unverified=request.get('allow_unverified', False),
+                    custom_command=request.get('custom_command', ''))
+                label = 'Tab 3 online runtime installation ' + str(index) + ': ' + (', '.join(request['packages']) or 'custom command')
+                lines.extend(optional_lines(['RUN ' + command], label, True, mode))
+                checks = [shlex.quote(name) for name in request.get('verify_commands') or []]
+                if checks:
+                    lines.extend(optional_lines(['RUN set -eu; ' + '; '.join('command -v ' + name + ' >/dev/null' for name in checks)],
+                                                label + ' — executable verification', True, mode))
+                lines.append('')
             lines.extend(dockerfile_removal_lines([row for row in removals if row['kind'] in ('os_package', 'python_package', 'r_package', 'perl_package')], mode == STRICT))
             if install_now and plan.get('target_java'):
                 lines.extend(optional_lines(self._java_activation_lines(plan), 'Java runtime selection', False, mode))
@@ -568,6 +588,7 @@ class BuildTab(tk.Frame):
                 lines.extend(['ENV PATH=' + json.dumps(':'.join(dict.fromkeys(paths)) + ':${PATH}'), ''])
             pending = {'status': 'INSTALLATION_ATTEMPTED' if install_now else 'NOT_INSTALLED',
                        'os_packages': list(packages), 'java_requirements': plan.get('java', []),
+                       'online_os_packages': [name for request in online_requests for name in request['packages']],
                        'java_target': plan.get('target_java'), 'local_os_package_archives': staged_archives, 'language_packages': env['language_packages'],
                        'language_versions': {key: env['config'].get(key, '') for key in ('java_version', 'python_version', 'r_version', 'perl_version')}}
             try:
@@ -590,13 +611,15 @@ class BuildTab(tk.Frame):
             (context / 'pending_requirements.json').write_text(json.dumps(pending, indent=2), encoding='utf-8')
             lines.extend(['RUN mkdir -p /opt/component-builder',
                           'COPY ["pending_requirements.json", "/opt/component-builder/pending_requirements.json"]', ''])
-            lines.extend(['WORKDIR /workspace', 'CMD ["/bin/sh"]', ''])
+            lines.append('')
             lines.extend(custom_directives(env['config']['dockerfile_directives']))
             dockerfile = '\n'.join(lines)
             (context / 'Dockerfile').write_text(dockerfile, encoding='utf-8')
             (context / 'build_manifest.json').write_text(json.dumps({'image_name': image, 'runtime': base,
                 'builder_used_during_tab4': state.get('builder_image', '') or base,
-                'components': metadata, 'runtime_packages': sorted(set(packages)),
+                'components': metadata, 'inherited_components': inherited_components,
+                'runtime_packages': sorted(set(packages)),
+                'online_installation_requests': online_requests,
                 'dependency_plan': plan, 'language_environment': env, 'mode': mode,
                 'installation_attempted': install_now, 'local_os_package_archives': staged_archives, 'requested_requirements': pending,
                 'skipped_inputs': issues, 'component_provenance': provenance, 'image_removals': removals,
@@ -611,7 +634,9 @@ class BuildTab(tk.Frame):
         state['validation'] = dict(state.get('validation', {}), last_results={})
         self._generation_issues = issues
         self.out.delete('1.0', 'end')
-        self.out.insert('end', dockerfile + ('\n\nBUILD WARNINGS:\n' + '\n'.join(issues) if issues else ''))
+        inheritance_notice = ('\n\nALREADY IN SELECTED RUNTIME IMAGE:\n' + '\n'.join(
+            item['name'] + ' => ' + item['path'] for item in inherited_components)) if inherited_components else ''
+        self.out.insert('end', dockerfile + inheritance_notice + ('\n\nBUILD WARNINGS:\n' + '\n'.join(issues) if issues else ''))
         self.status.set('Dockerfile generated; ready to build')
         return True
 
@@ -665,9 +690,13 @@ class BuildTab(tk.Frame):
         if not new_tag or new_tag == image or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]*', new_tag):
             messagebox.showerror('Revise image', 'Enter a valid NEW image tag different from the original.', parent=self)
             return False
+        previous_report = self.app.state.get('last_build_report') or {}
+        receipt = {'image': image, 'installed_components': list(previous_report.get('installed_components') or []),
+                   'inherited_components': list(previous_report.get('inherited_components') or [])}
         self.app.state.publish_base(archive='', tag=image, system=self.app.state.get('base_system', {}), inventory={})
         self.app.state.update({'image_name': new_tag, 'built_image': '', 'generated_dockerfile': '',
-                               'runtime_libraries': {}, 'validation': {}, 'last_build_report': {}})
+                               'runtime_libraries': {}, 'validation': {}, 'last_build_report': {},
+                               'runtime_install_receipt': receipt, 'show_image_components': True})
         self.image.set(new_tag)
         self._last_plan = None
         self._last_environment = None
@@ -675,11 +704,35 @@ class BuildTab(tk.Frame):
         self.out.delete('1.0', 'end')
         self.out.insert('end', 'Original image retained locally: ' + image + '\nNew base image: ' + image +
                         '\nNew image tag: ' + new_tag + '\nAdd or change components in Tab 3, then build again.\n')
+        editor = getattr(self.app, 'components_tab', None)
+        if editor is not None:
+            try:
+                if hasattr(editor, 'show_image_components'):
+                    editor.show_image_components.set(True)
+                refresh = getattr(editor, 'refresh_from_project_state', None)
+                if callable(refresh):
+                    refresh()
+                notebook = getattr(self.app, 'notebook', None)
+                if notebook is not None:
+                    notebook.select(editor)
+            except tk.TclError:
+                pass
         return True
 
     @staticmethod
     def _read_setup_issues(image):
         return BuildTab._read_image_report(image, 'setup-issues.txt')
+
+    @staticmethod
+    def _verify_runtime_executable(image, executable):
+        try:
+            result = subprocess.run(['docker', 'run', '--rm', '--network=none', '--entrypoint', '/bin/sh',
+                                     image, '-c', 'command -v ' + shlex.quote(executable) + ' >/dev/null'],
+                                    capture_output=True, text=True, timeout=20,
+                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            return result.returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            return False
 
     @staticmethod
     def _read_image_report(image, filename):
@@ -712,11 +765,155 @@ class BuildTab(tk.Frame):
                 except (OSError, subprocess.TimeoutExpired):
                     pass
 
+    def _choose_archive_for_build(self):
+        image = self.image.get().strip()
+        if not image or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.:/-]*', image):
+            messagebox.showerror('Build and save', 'Enter a valid Docker image name first.', parent=self)
+            return None
+        state = self.app.state
+        possible = [state.get('export_image_dir'), state.get('project_dir'), str(Path.cwd())]
+        directory = next((str(Path(str(path)).expanduser()) for path in possible
+                          if path and Path(str(path)).expanduser().is_dir()), str(Path.cwd()))
+        name = re.sub(r'[^A-Za-z0-9_.-]', '_', image).strip('._') + '.tar'
+        archive = filedialog.asksaveasfilename(
+            parent=self, title='Name the complete Docker image TAR archive',
+            initialdir=directory, initialfile=name, defaultextension='.tar',
+            filetypes=[('Docker image TAR', '*.tar')],
+        )
+        if not archive:
+            return None
+        chosen = Path(archive).expanduser()
+        if chosen.suffix.lower() != '.tar':
+            chosen = chosen.with_suffix('.tar')
+        if not chosen.parent.is_dir():
+            messagebox.showerror('Archive folder', 'Select an existing destination folder.', parent=self)
+            return None
+        protected = [state.get('runtime_base_archive'), state.get('builder_base_archive')]
+        for original in protected:
+            if original and chosen.resolve() == Path(str(original)).expanduser().resolve():
+                messagebox.showerror(
+                    'Protect existing base image',
+                    'The selected TAR is the CURRENT runtime or builder base archive. '
+                    'Choose a different filename to preserve that image backup.', parent=self)
+                return None
+        overwrite = chosen.exists()
+        if overwrite and not messagebox.askyesno(
+            'Replace existing TAR?',
+            'Replace this TAR only after the newly assembled image has been exported and validated?'
+            '\n\n' + str(chosen), parent=self,
+        ):
+            return None
+        return str(chosen), overwrite
+
+    def _activate_saved_image_as_base(self, image, archive, report):
+        state = self.app.state
+        original_runtime = str(report.get('base') or '').strip()
+        original_builder = str(state.get('builder_image') or '').strip()
+        separate_builder = bool(original_builder and original_builder != original_runtime)
+        installed = list(report.get('installed_components') or [])
+        inherited = list(report.get('inherited_components') or [])
+        receipt = {'image': image, 'installed_components': installed,
+                   'inherited_components': inherited}
+        base_system = dict(state.get('base_system') or {})
+        state.publish_base(archive=archive, tag=image, system=base_system, inventory={})
+        if not separate_builder:
+            state.publish_builder(archive=archive, tag=image,
+                                  system=base_system, inventory={})
+        installed_entries = list(installed)
+        inherited_entries = list(inherited)
+        installed_names = {str(entry.get('name') or '').casefold()
+                           for entry in installed_entries + inherited_entries
+                           if isinstance(entry, dict) and str(entry.get('name') or '').strip()}
+        previous_components = list(state.get('components') or [])
+        remaining = [component for component in previous_components
+                     if not (isinstance(component, dict)
+                             and str(component.get('kind') or '').strip().lower()
+                             in ('source', 'binary', 'jar/application', 'script', 'folder', 'other')
+                             and str(component.get('name') or '').casefold() in installed_names)]
+        if len(remaining) != len(previous_components):
+            state['components'] = remaining
+            self.out.insert('end', 'Installed binaries moved from pending Tab 3 additions to the runtime inventory: '
+                            + str(len(previous_components) - len(remaining)) + '\n')
+        state.update({
+            'runtime_install_receipt': receipt,
+            'show_image_components': False,
+            'final_online_package_requests': [],
+            'final_local_package_paths': [],
+            'image_removals': [],
+            'runtime_libraries': {},
+            'generated_dockerfile': '',
+            'image_name': derive_next_tag(image),
+            'built_image': image,
+            'last_full_image_tar': archive,
+            'last_saved_full_tar': archive,
+            'validation': dict(state.get('validation') or {},
+                               last_results={}, verified_image_id=''),
+        })
+        self.image.set(str(state['image_name']))
+        self._last_plan = None
+        self._last_environment = None
+        self.out.insert('end', '\nComplete image saved: ' + archive + '\n'
+                        'Current runtime now: ' + image + '\n'
+                        'Old base deselected (its Docker image and archive are not deleted).\n'
+                        'Next output tag: ' + str(state['image_name']) + '\n')
+        self.out.see('end')
+        for name in ('project_tab', 'components_tab', 'sources_tab',
+                     'runtime_tab', 'validation_tab', 'container_tab'):
+            tab = getattr(self.app, name, None)
+            refresh = getattr(tab, 'refresh_from_project_state', None)
+            if callable(refresh):
+                try:
+                    refresh()
+                except (tk.TclError, RuntimeError):
+                    pass
+        inventory_tab = getattr(self.app, 'base_tab', None)
+        if inventory_tab is not None:
+            try:
+                inventory_tab._active_role = 'runtime'
+                inventory_tab.refresh_selected_archives()
+                if not getattr(self.app, '_exit_after_build', False):
+                    self.after(250, inventory_tab.inspect_selected_base)
+            except (tk.TclError, RuntimeError):
+                pass
+        editor = getattr(self.app, 'components_tab', None)
+        if editor is not None and hasattr(editor, 'show_image_components'):
+            editor.show_image_components.set(False)
+        self.status.set('COMPLETE TAR SAVED — NEW RUNTIME BASE: ' + image)
+
+    def _uncompiled_source_requirements(self):
+        from build_artifacts import read_record
+        missing = []
+        for component in self._components():
+            if str(component.get('kind') or '').strip().lower() != 'source':
+                continue
+            installed = runtime_source_status(self.app.state, component)
+            if installed and installed.get('verified'):
+                continue
+            record, reason = read_record(self.app.state, component)
+            if record is None:
+                missing.append((str(component.get('name') or 'Unnamed source'),
+                                str(reason or 'No valid compiled output from Tab 4')))
+        return missing
+
     def build(self):
         if self._busy:
             return
+        missing_sources = self._uncompiled_source_requirements()
+        if missing_sources:
+            details = '\n'.join('• ' + name + ': ' + reason for name, reason in missing_sources)
+            self.status.set('BUILD BLOCKED — UNCOMPILED SOURCES')
+            messagebox.showerror(
+                'Compile all sources first',
+                'The complete Docker image cannot be assembled while enabled source '
+                'components are not compiled. This rule also applies in PERMISSIVE mode.\n\n'
+                + details + '\n\nCompile these components in Tab 4, then retry.', parent=self)
+            return
+        destination = self._choose_archive_for_build()
+        if destination is None:
+            return
         if not self.generate():
             return
+        self._archive_destination, self._archive_overwrite = destination
         image = self.image.get().strip()
         base = str(self.app.state.get('base_image', '') or '').strip()
         context = self.context.get().strip()
@@ -738,6 +935,10 @@ class BuildTab(tk.Frame):
         policy = normalize_policy(self.app.state.get('package_download_policy'))
         mode = normalize_mode(self.app.state.get('build_mode'))
         initial_issues = list(self._generation_issues)
+        online_requests = pending_online_requests(self.app.state, base)
+        save_final_tar = True
+        selected_archive = self._archive_destination
+        replace_archive = self._archive_overwrite
         self._busy = True
         self.build_button.config(state='disabled')
         self.status.set('ASSEMBLING IMAGE — ' + mode.upper())
@@ -753,6 +954,7 @@ class BuildTab(tk.Frame):
             detail = ''
             issues = list(initial_issues)
             network = 'none'
+            report_archive = ''
             try:
                 require_local_image(base)
                 for jar in plan['java']:
@@ -775,8 +977,11 @@ class BuildTab(tk.Frame):
                         log('WARNING: Package inventory unavailable: ' + str(exc) + '\n')
                         if mode != STRICT:
                             issues.append('Package inventory could not be verified')
-                    log('Already installed: ' + (', '.join(inspection['installed']) or 'none') + '\n')
-                    log('Need installation or verification: ' + (', '.join(inspection['missing']) or 'none') + '\n')
+                    if packages:
+                        log('Other requested OS packages already installed: ' + (', '.join(inspection['installed']) or 'none') + '\n')
+                        log('Other requested OS packages needing installation or verification: ' + (', '.join(inspection['missing']) or 'none') + '\n')
+                    else:
+                        log('No additional OS package requests outside Tab 3 online installation.\n')
                 else:
                     inspection = {'installed': [], 'missing': packages, 'manager': plan['manager']}
                     if packages:
@@ -787,7 +992,10 @@ class BuildTab(tk.Frame):
                     issues.append('Language packages NOT INSTALLED by assembly-only build: ' + '; '.join(uncertain_language_downloads))
                 custom_network = bool(env['config']['allow_custom_network'] and
                                       (env['config']['pre_commands'] or env['config']['post_commands'] or env['config']['dockerfile_directives']))
-                needs_network = bool((install_now and uncertain_language_downloads) or custom_network)
+                online_packages = [name for request in online_requests for name in request.get('packages') or []]
+                if online_requests:
+                    log('TAB 3 ONLINE PACKAGES INSTALLING IN FINAL IMAGE: ' + (', '.join(online_packages) or 'custom command') + '\n')
+                needs_network = bool(online_requests or (install_now and uncertain_language_downloads) or custom_network)
                 if mode == ASSEMBLY:
                     if env['python_required'] or env['r_required'] or env['perl_required'] or uncertain_language_downloads:
                         issues.append('Assembly-only mode skipped language environment installation and checks')
@@ -795,13 +1003,14 @@ class BuildTab(tk.Frame):
                     if policy == POLICY_OFFLINE:
                         if mode == STRICT:
                             raise RuntimeError('Offline policy prohibits missing package installation in strict mode')
-                        issues.append('Network disabled; missing OS/language components NOT INSTALLED')
-                        log('WARNING: Offline policy; downloading dependencies will be skipped.\n')
+                        issues.append('Network disabled; requested online OS/language components NOT INSTALLED: ' +
+                                      (', '.join(online_packages) or 'additional language packages'))
+                        log('WARNING: Offline policy; online package requests will be skipped. Building the image without them.\n')
                     else:
                         response = {}
                         signal = threading.Event()
                         approval = dict(inspection)
-                        approval['missing'] = list(uncertain_language_downloads)
+                        approval['missing'] = list(online_packages) + list(uncertain_language_downloads)
                         if custom_network:
                             approval['missing'].append('Custom commands requiring network access')
                         self._messages.put(('approve', base, approval, response, signal))
@@ -810,10 +1019,29 @@ class BuildTab(tk.Frame):
                         if response.get('approved'):
                             network = 'default'
                         elif mode == STRICT:
-                            raise RuntimeError('Package download not approved; strict mode stops the build')
+                            raise RuntimeError('Package download not approved; full-image installation cannot continue')
                         else:
-                            issues.append('Package downloads refused; proceeding without missing dependencies')
-                            log('WARNING: Downloads refused. Building a partial image offline.\n')
+                            issues.append('Package downloads refused; requested online components NOT INSTALLED: ' +
+                                          (', '.join(online_packages) or 'additional language packages'))
+                            log('WARNING: Downloads refused. Skipping online package installation and building a partial image offline.\n')
+                if online_requests:
+                    skipped_online = list(online_packages) if network == 'none' else []
+                    if skipped_online:
+                        pending['status'] = 'PARTIAL_BUILD_ONLINE_INSTALLATIONS_SKIPPED'
+                    pending['online_installation_status'] = 'SKIPPED_NO_DOWNLOAD_APPROVAL' if skipped_online else 'APPROVED_FOR_INSTALLATION'
+                    pending['skipped_online_packages'] = skipped_online
+                    provenance['requested_requirements'] = dict(pending)
+                    provenance['online_installation'] = {'status': pending['online_installation_status'],
+                                                          'skipped_packages': list(skipped_online),
+                                                          'requested_packages': list(online_packages),
+                                                          'network': network}
+                    if skipped_online:
+                        provenance.setdefault('skipped_inputs', []).append('Online package installation skipped: ' + ', '.join(skipped_online))
+                    pending_path.write_text(json.dumps(pending, indent=2), encoding='utf-8')
+                    provenance_path.write_text(json.dumps(provenance, indent=2), encoding='utf-8')
+                    manifest['requested_requirements'] = dict(pending)
+                    manifest['component_provenance'] = dict(provenance)
+                    manifest_path.write_text(json.dumps(manifest, indent=2), encoding='utf-8')
                 if mode == STRICT and plan['java'] and plan['target_java'] is None:
                     base_java = probe_java(base, timeout=12)
                     installed = base_java.get('version') if base_java.get('status') == 'OK' else None
@@ -834,7 +1062,7 @@ class BuildTab(tk.Frame):
                 args += ['-t', image, context]
                 log('Network access: ' + network + '\n$ ' + subprocess.list2cmdline(args) + '\n')
                 process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                           stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1,
+                                           stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1,
                                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 for line in process.stdout:
                     log(line)
@@ -850,10 +1078,27 @@ class BuildTab(tk.Frame):
                     if install_now and network == 'none':
                         if uncertain_language_downloads:
                             issues.append('Unverified language packages: ' + '; '.join(uncertain_language_downloads))
+                    runtime_checks = []
+                    if env['python_required']:
+                        version = env['python_version']
+                        runtime_checks.append(('Python', ('python' + str(version[0])) if version else 'python'))
+                    if env['r_required']:
+                        runtime_checks.append(('R', 'Rscript'))
+                    if env['perl_required']:
+                        runtime_checks.append(('Perl', 'perl'))
+                    for language, executable in runtime_checks:
+                        if self._verify_runtime_executable(image, executable):
+                            issues = [item for item in issues if not item.startswith(language + ' runtime required: check the selected image')]
+                            log('VERIFIED: ' + language + ' executable ' + executable + ' exists in the final image.\n')
+                        else:
+                            issues.append(language + ' executable ' + executable + ' could not be verified in the final image')
+                            log('WARNING: ' + language + ' executable ' + executable + ' was not found in the final image.\n')
                     if install_now and plan['java']:
                         verification = probe_java(image, timeout=12)
                         installed = verification.get('version') if verification.get('status') == 'OK' else None
                         minimums = [jar['minimum'] for jar in plan['java'] if jar['minimum']]
+                        if plan.get('target_java') is not None:
+                            minimums.append(plan['target_java'])
                         if installed is None:
                             issues.append('Final image JVM could not be verified; verify in Tab 7')
                             log('WARNING: Final Java runtime could not be queried.\n')
@@ -861,8 +1106,22 @@ class BuildTab(tk.Frame):
                             issues.append('Final Java ' + str(installed) + ' is older than required Java ' + str(max(minimums)))
                             log('WARNING: Final Java runtime is incompatible with some JARs.\n')
                         else:
+                            issues = [item for item in issues if not ('required by application bytecode' in item and item.startswith('Java '))]
                             log('VERIFIED: Java ' + str(installed) + ' satisfies all detected JAR minimum versions.\n')
                     detail = 'Docker image created successfully'
+                    if save_final_tar:
+                        try:
+                            log('Saving the COMPLETE built Docker image as TAR: ' + selected_archive + '\n')
+                            saved = save_full_image_to_tar(
+                                image, selected_archive, progress=log, overwrite=replace_archive)
+                            report_archive = saved['archive']
+                            pending['complete_image_archive'] = report_archive
+                            self._messages.put(('full_tar_saved', image, report_archive))
+                        except Exception as exc:
+                            report_archive = ''
+                            issues.append('Full-image TAR export failed: ' + str(exc))
+                            log('ERROR: FULL image was created but TAR export failed: ' + str(exc) + '\n')
+                            self._messages.put(('full_tar_error', str(exc)))
                 else:
                     log('Docker image assembly failed with exit code ' + str(code) + '\n')
             except Exception as exc:
@@ -880,15 +1139,23 @@ class BuildTab(tk.Frame):
                     log('  - ' + item + '\n')
             quality = ('BUILT WITH WARNINGS' if issues else 'BUILT — VERIFICATION PENDING') if code == 0 else 'BUILD FAILED'
             report = {'image': image, 'base': base, 'mode': mode, 'quality': quality,
+                      'installed_components': manifest.get('components') or [],
+                      'inherited_components': manifest.get('inherited_components') or [],
                       'issues': issues, 'network': network, 'docker_exit_code': code,
                       'build_succeeded': code == 0,
+                      'full_tar_archive': report_archive,
+                      'tar_export_succeeded': bool(report_archive),
                       'requirements_verified': code == 0 and not bool(issues),
                       'installation_attempted': install_now,
-                      'not_installed_os_packages': [x for x in packages if x not in inspection.get('installed', [])] if not install_now else [],
-                      'not_installed_language_packages': env['language_packages'] if not install_now else {},
+                      'not_installed_os_packages': list(dict.fromkeys(([x for x in packages if x not in inspection.get('installed', [])] if not install_now else []) +
+                                                                  ([name for request in online_requests for name in request.get('packages') or []] if network == 'none' else []))),
+                      'not_installed_language_packages': env['language_packages'] if not install_now or network == 'none' else {},
+                      'online_installation_status': pending.get('online_installation_status', 'NOT_REQUESTED'),
+                      'skipped_online_packages': pending.get('skipped_online_packages', []),
                       'provenance_revision': provenance.get('revision'),
                       'component_provenance_path': '/opt/component-builder/component_provenance.json',
-                      'removed_this_revision': removals}
+                      'removed_this_revision': removals,
+                      'online_os_packages': [name for request in online_requests for name in request.get('packages') or []]}
             self._messages.put(('finish', code, image, detail, report))
 
         threading.Thread(target=worker, daemon=True).start()

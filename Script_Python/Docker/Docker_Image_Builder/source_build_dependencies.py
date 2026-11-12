@@ -3,55 +3,9 @@ import shlex
 import subprocess
 from pathlib import Path
 from source_archive import SourceArchive, is_source_archive
+from recognized_elements import entry_map, recognized_names, require_dependencies, valid_name
 
 
-TOOLS = frozenset('ar autoconf automake autoreconf bash bison c++ cargo cc clang clang++ cmake curl flex g++ gcc git go gfortran gmake gradle java javac ld make meson mvn ninja node npm perl pip pip3 pkg-config python python2 python3 R Rscript rustc sh swig tar unzip wget'.split())
-PACKAGES = {
-    'ar': ('binutils', 'binutils', 'binutils'),
-    'autoconf': ('autoconf', 'autoconf', 'autoconf'),
-    'automake': ('automake', 'automake', 'automake'),
-    'autoreconf': ('autoconf', 'autoconf', 'autoconf'),
-    'bash': ('bash', 'bash', 'bash'),
-    'bison': ('bison', 'bison', 'bison'),
-    'c++': ('g++', 'g++', 'gcc-c++'),
-    'cargo': ('cargo', 'cargo', 'cargo'),
-    'cc': ('gcc', 'gcc', 'gcc'),
-    'clang': ('clang', 'clang', 'clang'),
-    'clang++': ('clang', 'clang', 'clang'),
-    'cmake': ('cmake', 'cmake', 'cmake'),
-    'curl': ('curl', 'curl', 'curl'),
-    'flex': ('flex', 'flex', 'flex'),
-    'g++': ('g++', 'g++', 'gcc-c++'),
-    'gcc': ('gcc', 'gcc', 'gcc'),
-    'git': ('git', 'git', 'git'),
-    'go': ('golang-go', 'go', 'golang'),
-    'gfortran': ('gfortran', 'gfortran', 'gcc-gfortran'),
-    'gmake': ('make', 'make', 'make'),
-    'gradle': ('gradle', 'gradle', 'gradle'),
-    'java': ('default-jre-headless', 'openjdk17-jre', 'java-17-openjdk-headless'),
-    'javac': ('default-jdk-headless', 'openjdk17', 'java-17-openjdk-devel'),
-    'ld': ('binutils', 'binutils', 'binutils'),
-    'make': ('make', 'make', 'make'),
-    'meson': ('meson', 'meson', 'meson'),
-    'mvn': ('maven', 'maven', 'maven'),
-    'ninja': ('ninja-build', 'ninja', 'ninja-build'),
-    'node': ('nodejs', 'nodejs', 'nodejs'),
-    'npm': ('npm', 'npm', 'npm'),
-    'perl': ('perl', 'perl', 'perl'),
-    'pip': ('python3-pip', 'py3-pip', 'python3-pip'),
-    'pip3': ('python3-pip', 'py3-pip', 'python3-pip'),
-    'pkg-config': ('pkg-config', 'pkgconf', 'pkgconf-pkg-config'),
-    'python2': ('python2.7', '', 'python2'),
-    'python3': ('python3', 'python3', 'python3'),
-    'R': ('r-base-core', 'R', 'R'),
-    'Rscript': ('r-base-core', 'R', 'R'),
-    'rustc': ('rustc', 'rust', 'rust'),
-    'sh': ('dash', 'busybox', 'bash'),
-    'swig': ('swig', 'swig', 'swig'),
-    'tar': ('tar', 'tar', 'tar'),
-    'unzip': ('unzip', 'unzip', 'unzip'),
-    'wget': ('wget', 'wget', 'wget'),
-}
 ASSIGNMENT = re.compile(r'^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*(?::=|\?=|\+=|=)\s*(.*)$')
 VARIABLE = re.compile(r'\$\(([^()]+)\)|\$\{([^{}]+)\}')
 RULE = re.compile(r'^([^:#=]+?)\s*:(?![=])(.*)$')
@@ -64,7 +18,8 @@ def _tokens(command):
         return command.split()
 
 
-def _shell_commands(command):
+def _shell_commands(command, known=None):
+    known = recognized_names() if known is None else known
     found = set()
     for segment in re.split(r'\s*(?:&&|\|\||[;|])\s*', command):
         words = _tokens(segment.strip().lstrip('@+-'))
@@ -76,14 +31,14 @@ def _shell_commands(command):
             continue
         for word in words[:3]:
             name = word.lstrip('@+-').rsplit('/', 1)[-1]
-            if name in TOOLS:
+            if name in known:
                 found.add(name)
                 if word == words[0]:
                     break
     return found
 
 
-def _shebang(path, archive=None):
+def _shebang(path, archive=None, known=None):
     try:
         if archive:
             line = archive.read_head(path.relative_to(archive.path).as_posix()).splitlines()[0].decode('utf-8', errors='replace').strip()
@@ -100,7 +55,7 @@ def _shebang(path, archive=None):
     result = Path(words[0]).name
     if result == 'env' and len(words) > 1:
         result = words[1] if words[1] != '-S' else words[2] if len(words) > 2 else ''
-    return result if result in TOOLS else ''
+    return result if result in (recognized_names() if known is None else known) else ''
 
 
 def _make_location(source, build_command):
@@ -186,6 +141,8 @@ def discover_build_requirements(source_folder, build_command):
     source = Path(str(source_folder or '')).resolve()
     archive = SourceArchive(source) if source.is_file() and is_source_archive(source) else None
     detected = {}
+    catalog = entry_map()
+    known = frozenset(catalog)
 
     def exists(candidate):
         return archive.has(candidate.relative_to(source).as_posix()) if archive else candidate.is_file()
@@ -195,16 +152,16 @@ def discover_build_requirements(source_folder, build_command):
                 candidate.read_text(encoding='utf-8', errors='replace')[:limit])
 
     def add(command, evidence):
-        if command in TOOLS:
+        if command in known:
             detected.setdefault(command, set()).add(str(evidence))
 
-    for command in _shell_commands(build_command):
+    for command in _shell_commands(build_command, known):
         add(command, 'Build command')
     for token in _tokens(build_command):
         if token.startswith('./'):
             candidate = (source / token).resolve()
             if source in candidate.parents:
-                add(_shebang(candidate, archive), 'Script: ' + token)
+                add(_shebang(candidate, archive, known), 'Script: ' + token)
     scanned_makefiles = set()
     visited_scripts = set()
 
@@ -214,7 +171,7 @@ def discover_build_requirements(source_folder, build_command):
         if candidate in visited_scripts or not exists(candidate):
             return
         visited_scripts.add(candidate)
-        add(_shebang(candidate, archive), candidate.relative_to(source).as_posix())
+        add(_shebang(candidate, archive, known), candidate.relative_to(source).as_posix())
         if candidate.suffix.lower() not in ('.sh', '.bash', '.pl', '.py', '.r'):
             return
         try:
@@ -222,7 +179,7 @@ def discover_build_requirements(source_folder, build_command):
         except (OSError, ValueError):
             return
         for line in content.splitlines():
-            for command in _shell_commands(line):
+            for command in _shell_commands(line, known):
                 if candidate.suffix.lower() in ('.sh', '.bash'):
                     add(command, candidate.relative_to(source).as_posix())
 
@@ -257,7 +214,7 @@ def discover_build_requirements(source_folder, build_command):
             visited.add(name)
             for recipe, lineno in rules[name]['recipes']:
                 inspected += 1
-                for command in _shell_commands(recipe):
+                for command in _shell_commands(recipe, known):
                     add(command, makefile.relative_to(source).as_posix() + ':' + str(lineno))
                 inspect_recipe_scripts(work, recipe)
                 child, child_target = _make_location(work, recipe.lstrip('@+-'))
@@ -273,19 +230,8 @@ def discover_build_requirements(source_folder, build_command):
     for token in _tokens(build_command):
         if token.startswith(('scripts/', './', 'src/')):
             inspect_script((source / token).resolve())
-    commands = set(detected)
-    if 'mvn' in commands or 'gradle' in commands:
-        add('java', 'Java build system runtime')
-        add('javac', 'Java build system compiler')
-    if 'javac' in commands:
-        add('java', 'Java compiler runtime')
-    lowered = build_command.lower()
-    if './mvnw' in lowered or './gradlew' in lowered:
-        add('java', 'Java build wrapper runtime')
-        add('javac', 'Java build wrapper compiler')
-    if 'cargo' in commands:
-        add('rustc', 'Rust compiler used by Cargo')
-    return [{'command': name, 'evidence': sorted(reasons)} for name, reasons in sorted(detected.items())]
+    requirements = [{'command': name, 'evidence': sorted(reasons)} for name, reasons in sorted(detected.items())]
+    return require_dependencies(requirements)
 
 
 def valid_executable_path(value):
@@ -295,18 +241,18 @@ def valid_executable_path(value):
             not any(char in value for char in ('\n', '\r', '\x00', '|', '\\')))
 
 
-def inspect_builder_commands(image, requirements, runner=None, timeout=75, overrides=None):
+def inspect_builder_commands(image, requirements, runner=None, timeout=50, overrides=None):
     commands = sorted({item['command'] if isinstance(item, dict) else str(item) for item in requirements})
-    if not all(command in TOOLS for command in commands):
-        raise ValueError('Unexpected command in build requirements.')
+    if not all(valid_name(command) for command in commands):
+        raise ValueError('Invalid executable name in build requirements.')
     paths = dict(overrides or {})
     if any(command not in commands or not valid_executable_path(path) for command, path in paths.items()):
         raise ValueError('Each custom builder executable must be an absolute Linux path.')
-    script = '''if [ -r /etc/os-release ]; then . /etc/os-release; fi
+    script = r'''if [ -r /etc/os-release ]; then . /etc/os-release; fi
 printf 'DISTRO|%s|%s\n' "$ID" "$VERSION_ID"
 if command -v apt-get >/dev/null 2>&1; then manager=apt; elif command -v apk >/dev/null 2>&1; then manager=apk; elif command -v rpm >/dev/null 2>&1; then manager=rpm; else manager=unknown; fi
 printf 'MANAGER|%s\n' "$manager"
-for item do
+for item in "$@"; do
   tool=${item%%=*}
   custom=${item#*=}
   if [ -n "$custom" ]; then
@@ -316,38 +262,57 @@ for item do
   fi
   if [ -n "$location" ]; then
     version=''
-    case "$tool" in
-      gcc|g++|c++|make|cmake|python|python2|python3|git|mvn|gradle|cargo|go|R|Rscript|ninja|meson|node|npm|bison|flex|autoconf|automake|swig|gfortran)
-        if command -v timeout >/dev/null 2>&1; then version=$(timeout 3 "$location" --version 2>&1 | head -n 1 || true); fi ;;
-      perl)
-        if command -v timeout >/dev/null 2>&1; then version=$(timeout 3 "$location" -e 'print $^V' 2>&1 || true); fi ;;
-      java|javac)
-        if command -v timeout >/dev/null 2>&1; then version=$(timeout 3 "$location" -version 2>&1 | head -n 1 || true); fi ;;
-    esac
+    if command -v timeout >/dev/null 2>&1; then
+      if version=$(timeout 2 "$location" --version 2>&1); then :; else version=$(timeout 1 "$location" -version 2>&1 || true); fi
+      version=$(printf '%s\n' "$version" | head -n 1)
+    fi
     version=$(printf '%s' "$version" | tr '\r\n|' '   ' | cut -c 1-160)
     printf 'TOOL|%s|1|%s|%s\n' "$tool" "$location" "$version"
+    package=''
+    if [ "$manager" = apt ] && command -v dpkg-query >/dev/null 2>&1; then
+      package=$(dpkg-query -S "$location" 2>/dev/null | head -n 1 | cut -d: -f1 || true)
+    elif [ "$manager" = rpm ] && command -v rpm >/dev/null 2>&1; then
+      package=$(rpm -qf --qf '%{NAME}' "$location" 2>/dev/null || true)
+    elif [ "$manager" = apk ] && command -v apk >/dev/null 2>&1; then
+      package=$(apk info -W "$location" 2>/dev/null | sed -n 's/.* is owned by \\([^ ]*\\).*/\\1/p' | head -n 1 || true)
+    fi
+    if [ -n "$package" ]; then printf 'OWNER|%s|%s\n' "$tool" "$package"; fi
   else
     printf 'TOOL|%s|0||\n' "$tool"
+    if [ "$manager" = apt ] && apt-cache show "$tool" >/dev/null 2>&1; then
+      printf 'CANDIDATE|%s|%s\n' "$tool" "$tool"
+    elif [ "$manager" = apk ] && apk search -x "$tool" 2>/dev/null | grep -q .; then
+      printf 'CANDIDATE|%s|%s\n' "$tool" "$tool"
+    fi
   fi
 done'''
-    args = ['docker', 'run', '--rm', '--pull=never', '--network=none', '--entrypoint', '/bin/sh',
-            str(image), '-c', script, 'builder-tool-inspection', *(command + '=' + paths.get(command, '') for command in commands)]
+    args = ['docker', 'run', '--rm', '-i', '--pull=never', '--network=none', '--entrypoint', '/bin/sh',
+            str(image), '-s', '--', *(command + '=' + paths.get(command, '') for command in commands)]
     runner = runner or subprocess.run
     try:
-        result = runner(args, capture_output=True, text=True, errors='replace',
-                        stdin=subprocess.DEVNULL, timeout=timeout,
+        payload = script.replace('\r\n', '\n').replace('\r', '\n').encode('utf-8')
+        result = runner(args, capture_output=True, input=payload, timeout=timeout,
                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f'Builder tool check exceeded {timeout} seconds; Docker may be unresponsive. The installed-tool status is unknown.') from exc
+    except OSError as exc:
         raise RuntimeError('Cannot inspect commands in selected builder: ' + str(exc)) from exc
     if result.returncode:
-        raise RuntimeError('Builder command inspection failed: ' + (result.stderr or result.stdout or '')[-1200:])
+        details = result.stderr or result.stdout or b''
+        if isinstance(details, bytes):
+            details = details.decode('utf-8', errors='replace')
+        raise RuntimeError('Builder command inspection failed: ' + details[-1200:])
+    stdout = result.stdout or b''
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode('utf-8', errors='replace')
     found = {}
     missing = []
     seen = set()
     manager = 'unknown'
     distro = 'unknown'
     version = ''
-    for line in result.stdout.splitlines():
+    package_candidates = {}
+    for line in stdout.splitlines():
         fields = line.split('|', 4)
         if fields[0] == 'DISTRO' and len(fields) >= 3:
             distro, version = fields[1:3]
@@ -361,34 +326,24 @@ done'''
                                'version': fields[4] if len(fields) > 4 else ''}
             else:
                 missing.append(name)
+        elif fields[0] in ('OWNER', 'CANDIDATE') and len(fields) >= 3 and fields[1] in commands:
+            package = fields[2].strip()
+            if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+:_-]*', package):
+                package_candidates[fields[1]] = package
     if seen != set(commands):
         raise RuntimeError('Builder returned an incomplete command inventory.')
     return {'found': found, 'missing': sorted(set(missing)), 'manager': manager,
-            'distro': distro, 'distro_version': version}
+            'distro': distro, 'distro_version': version, 'package_candidates': package_candidates}
 
 
 def suggested_package(command, report):
-    manager = report.get('manager', '')
-    distro = report.get('distro', '')
-    version = report.get('distro_version', '')
-    if command == 'python':
-        if manager != 'apt':
-            return ''
-        try:
-            major = int(version.split('.', 1)[0])
-        except (ValueError, TypeError):
-            return ''
-        if (distro == 'debian' and major <= 9) or (distro == 'ubuntu' and major <= 18):
-            return 'python'
-        return 'python-is-python3'
-    hint = PACKAGES.get(command)
-    return hint[{'apt': 0, 'apk': 1, 'rpm': 2}[manager]] if hint and manager in ('apt', 'apk', 'rpm') else ''
+    return str((report.get('package_candidates') or {}).get(command) or '')
 
 
 def builder_command_preflight(commands, allow_missing=False, overrides=None):
     parts = []
     paths = dict(overrides or {})
-    if any(command not in TOOLS or not valid_executable_path(path) for command, path in paths.items()):
+    if any(not valid_name(command) or not valid_executable_path(path) for command, path in paths.items()):
         raise ValueError('Invalid custom build-tool executable path.')
     if paths:
         parts.append('mkdir -p /tmp/docker-builder-tool-shims')
@@ -400,7 +355,7 @@ def builder_command_preflight(commands, allow_missing=False, overrides=None):
                          'else echo "INVALID-BUILD-TOOL-PATH: ' + command + '"; exit 46; fi')
         parts.append('export PATH=/tmp/docker-builder-tool-shims:"$PATH"')
     for command in sorted(set(commands)):
-        if command not in TOOLS:
+        if not valid_name(command):
             continue
         quoted = shlex.quote(command)
         action = 'true' if allow_missing else 'exit 45'
@@ -408,9 +363,6 @@ def builder_command_preflight(commands, allow_missing=False, overrides=None):
                      'echo "MISSING-BUILD-TOOL: ' + command + '"; ' + action + '; '
                      'else echo "BUILD-TOOL-VERIFIED: ' + command + ' at $(command -v ' + quoted + ')"; '
                      'if command -v timeout >/dev/null 2>&1; then '
-                     'case ' + quoted + ' in '
-                     'python|python2|python3|gcc|g++|c++|make|cmake|perl|java|javac|mvn|gradle|cargo|go|R|Rscript) '
-                     'case ' + quoted + ' in java|javac) _tool_arg=-version;; perl) _tool_arg=-v;; *) _tool_arg=--version;; esac; '
-                     'timeout 3 ' + quoted + ' "$_tool_arg" 2>&1 | head -n 1 || true;; '
-                     'esac; fi; fi')
+                     'timeout 3 ' + quoted + ' --version 2>&1 | head -n 1 || true; '
+                     'fi; fi')
     return '; '.join(parts)

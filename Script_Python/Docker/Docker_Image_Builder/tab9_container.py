@@ -3,24 +3,40 @@ import ntpath
 import posixpath
 import queue
 import re
+import shlex
 import subprocess
 import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from workflow_toolbar import add_more_menu
 
 
-EXAMPLES = (
-    'ls -lah /data',
-    'bedtools --version',
-    'bedtools --help',
-    'samtools',
-    'STAR --help',
-    'java -version',
-    'java -jar /opt/picard/picard.jar',
-    'blat',
-    'bedtools sort -i /data/regions.bed > /data/regions.sorted.bed',
-)
+def command_examples(state, mount_point):
+    mount = shlex.quote(str(mount_point or '/'))
+    examples = ['pwd', 'ls -lah ' + mount]
+    for component in state.get('components') or []:
+        if not isinstance(component, dict) or not component.get('enabled', True):
+            continue
+        kind = str(component.get('kind') or '').lower()
+        if kind not in ('binary', 'source', 'os package', 'script'):
+            continue
+        name = str(component.get('name') or '').strip()
+        if kind == 'os package':
+            executable = name if re.fullmatch(r'[A-Za-z0-9_+.-]+', name) else ''
+            if executable:
+                examples.append('command -v ' + shlex.quote(executable))
+            continue
+        source = str(component.get('source') or '').strip()
+        if kind == 'source':
+            record = (state.get('compiled_artifacts') or {}).get(name) or {}
+            source = str(record.get('artifact') or '')
+        destination = str(component.get('destination') or '').strip()
+        if not source or not destination.startswith('/'):
+            continue
+        target = posixpath.join(destination, Path(source).name)
+        examples.append('test -x ' + shlex.quote(target) + ' && echo EXECUTABLE_FOUND')
+    return list(dict.fromkeys(examples))
 
 
 def validate_config(config):
@@ -55,7 +71,7 @@ def create_container_args(config):
     mount = 'type=bind,source=' + data['host_folder'] + ',target=' + data['mount_point']
     if data['read_only']:
         mount += ',readonly'
-    return ['docker', 'run', '--pull', 'never', '--detach', '--name', data['name'], '--mount', mount,
+    return ['docker', 'create', '--pull', 'never', '--name', data['name'], '--mount', mount,
             '--workdir', data['workdir'], '--network', 'bridge' if data['network'] else 'none',
             '--entrypoint', '/bin/sh', data['image'], '-c', 'while :; do sleep 3600; done']
 
@@ -93,7 +109,7 @@ def list_docker_images():
         result.append({'name': name, 'id': str(row.get('ID', '') or ''),
                        'size': str(row.get('Size', '') or ''),
                        'created': str(row.get('CreatedSince', '') or row.get('CreatedAt', '') or '')})
-    result.sort(key=lambda image: (image['name'] != 'component-toolbox:latest', image['name'].lower()))
+    result.sort(key=lambda image: image['name'].lower())
     return result
 
 
@@ -104,14 +120,14 @@ class ContainerTab(tk.Frame):
         self.events = queue.Queue()
         self.busy = False
         self._active_process = None
-        self.name = tk.StringVar(value='bioinformatics')
+        self.name = tk.StringVar(value='container')
         self.image = tk.StringVar()
         self.host_folder = tk.StringVar()
         self.mount_point = tk.StringVar(value='/data')
         self.workdir = tk.StringVar(value='/data')
         self.network = tk.BooleanVar(value=False)
         self.read_only = tk.BooleanVar(value=False)
-        self.preset = tk.StringVar(value=EXAMPLES[0])
+        self.preset = tk.StringVar(value='pwd')
         self.status = tk.StringVar(value='Select the built image and a Windows folder to begin.')
         self._render()
         self.refresh_from_project_state()
@@ -156,10 +172,13 @@ class ContainerTab(tk.Frame):
         controls = tk.Frame(self, bg='#EAF3FA')
         controls.pack(fill='x', padx=17, pady=7)
         self.start_button = self._button(controls, 'Create / Start Container', self.start_container, '#1D9D78')
-        self._button(controls, 'Check Container', self.check_container, '#4B9EC9')
         self._button(controls, 'Stop Container', self.stop_container, '#D88755')
-        self._button(controls, 'Remove Stopped Container', self.remove_container, '#BE6666')
         self._button(controls, 'Save Settings', self.save_settings, '#AED6F1')
+        add_more_menu(controls, [
+            ("Check container status", self.check_container),
+            ("Diagnose Docker or Windows mount", self.diagnose_docker),
+            ("Remove stopped container", self.remove_container),
+        ], "#EAF3FA")
 
         status_box = tk.Frame(self, bg='#D8EFF0', padx=12, pady=8)
         status_box.pack(fill='x', padx=17)
@@ -171,14 +190,15 @@ class ContainerTab(tk.Frame):
                                     font=('Segoe UI', 10, 'bold'))
         command_box.pack(fill='x', padx=17, pady=(10, 7))
         tk.Label(command_box, text='Examples:', bg='#EAF3FA').pack(anchor='w')
-        choices = ttk.Combobox(command_box, textvariable=self.preset, values=EXAMPLES, state='readonly')
+        choices = ttk.Combobox(command_box, textvariable=self.preset, values=command_examples(self.app.state, self.mount_point.get()), state='readonly')
+        self.example_choices = choices
         choices.pack(fill='x', pady=(2, 7))
         choices.bind('<<ComboboxSelected>>', self.choose_example)
-        tk.Label(command_box, text='Command (editable; /data refers to the mounted Windows folder):',
+        tk.Label(command_box, text='Command (editable; use the configured Linux mount directory to access Windows files):',
                  bg='#EAF3FA').pack(anchor='w')
         self.command_editor = tk.Text(command_box, height=3, wrap='word', font=('Consolas', 11))
         self.command_editor.pack(fill='x', pady=(2, 6))
-        self.command_editor.insert('1.0', EXAMPLES[0])
+        self.command_editor.insert('1.0', self.preset.get())
         row = tk.Frame(command_box, bg='#EAF3FA')
         row.pack(fill='x')
         self.run_button = self._button(row, 'Run Command', self.run_command, '#20A878')
@@ -296,6 +316,12 @@ class ContainerTab(tk.Frame):
         if not archive.is_file():
             messagebox.showerror('Load Docker TAR', 'The selected archive does not exist.', parent=self)
             return
+        if re.search(r'_with_(?:repository|local)_packages\.tar(?:\.gz)?$', archive.name, re.I):
+            messagebox.showerror('Package-stage archive selected',
+                    'This is an OLD package-stage TAR, not the complete application image.\n\n'
+                    'Build your full Docker image in Tab 6 and use its automatically exported *_FULL.tar instead.',
+                    parent=self)
+            return
         if not messagebox.askyesno('Load image into Docker Desktop',
                 'Import the selected Docker image archive into Docker Desktop?\n\n' + str(archive) +
                 '\n\nThis does not start a container or modify the archive.', parent=self):
@@ -372,6 +398,10 @@ class ContainerTab(tk.Frame):
                 self.host_folder.set(candidate)
         self.network.set(bool(data.get('network', False)))
         self.read_only.set(bool(data.get('read_only', False)))
+        options = command_examples(self.app.state, self.mount_point.get())
+        self.example_choices.configure(values=options)
+        if self.preset.get() not in options:
+            self.preset.set(options[0])
         if data.get('command'):
             self.command_editor.delete('1.0', 'end')
             self.command_editor.insert('1.0', str(data['command']))
@@ -429,16 +459,32 @@ class ContainerTab(tk.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _run(self, args, timeout=None, check=True):
+    def _run(self, args, timeout=45, check=True):
         self.events.put(('log', '$ ' + subprocess.list2cmdline(args) + '\n'))
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, errors='replace',
                                    bufsize=1, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self._active_process = process
         try:
-            for line in process.stdout:
-                self.events.put(('log', line))
-            code = process.wait(timeout=timeout)
+            if timeout is not None:
+                try:
+                    output, _ = process.communicate(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    try:
+                        output, _ = process.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        output = ''
+                    if output:
+                        self.events.put(('log', output))
+                    raise RuntimeError('Docker did not respond within ' + str(timeout) + ' seconds. The command was stopped. Use Diagnose Docker / Mount to identify the problem.')
+                if output:
+                    self.events.put(('log', output))
+                code = process.returncode
+            else:
+                for line in process.stdout:
+                    self.events.put(('log', line))
+                code = process.wait()
         finally:
             self._active_process = None
             if process.stdout:
@@ -457,6 +503,14 @@ class ContainerTab(tk.Frame):
         except ValueError as exc:
             messagebox.showerror('Start Container', str(exc), parent=self)
             return
+        selected_base = str(self.app.state.get('base_image') or '').strip()
+        final_tag = str(self.app.state.get('built_image') or self.app.state.get('image_name') or '').strip()
+        if selected_base and config['image'] == selected_base and config['image'] != final_tag:
+            if not messagebox.askyesno('Runtime base image selected',
+                    'You selected a runtime BASE checkpoint:\n\n' + config['image'] +
+                    ('\n\nYour assembled image is ' + final_tag + '.' if final_tag else '\n\nNo assembled image has been selected.') +
+                    ' The base may not contain your selected components.\n\nStart the selected base anyway?', parent=self):
+                return
         self.app.state['container_config'] = config
 
         def action():
@@ -476,13 +530,49 @@ class ContainerTab(tk.Frame):
                 if status == 'running':
                     self.events.put(('log', 'Using the existing running container. Existing mount settings are unchanged.\n'))
                     return 'RUNNING: ' + config['name']
-                self._run(['docker', 'start', config['name']])
+                self.events.put(('log', 'Starting previously created container...\n'))
+                self._run(['docker', 'start', config['name']], timeout=45)
                 self.events.put(('log', 'Existing mounts are reused. Remove the stopped container to change its mounts.\n'))
                 return 'RUNNING: ' + config['name']
-            self._run(args)
+            self.events.put(('log', 'STEP 1/2: Creating container with the Windows folder mount...\n'))
+            self._run(args, timeout=35)
+            self.events.put(('log', 'STEP 2/2: Starting the created container...\n'))
+            self._run(['docker', 'start', config['name']], timeout=45)
             return 'RUNNING: ' + config['name'] + ' | ' + config['host_folder'] + ' → ' + config['mount_point']
 
         self._work('Start container', action)
+
+    def diagnose_docker(self):
+        image = self.image.get().strip()
+        host_folder = self.host_folder.get().strip()
+        mount_point = self.mount_point.get().strip()
+        if not image:
+            messagebox.showerror('Docker diagnostics', 'Select a Docker image first.', parent=self)
+            return
+        if not host_folder or not Path(host_folder).is_dir():
+            messagebox.showerror('Docker diagnostics', 'Select an existing Windows data folder first.', parent=self)
+            return
+        if not mount_point.startswith('/') or '\\' in mount_point or ',' in mount_point:
+            messagebox.showerror('Docker diagnostics', 'Enter a valid absolute Linux mount path.', parent=self)
+            return
+
+        def action():
+            self.events.put(('log', 'CHECK 1/4 — Docker Desktop engine response\n'))
+            self._run(['docker', 'info', '--format', '{{.ServerVersion}}'], timeout=12)
+            self.events.put(('log', 'CHECK 2/4 — Selected local Docker image\n'))
+            self._run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], timeout=15)
+            self.events.put(('log', 'CHECK 3/4 — Can this image run WITHOUT mounting Windows files?\n'))
+            self._run(['docker', 'run', '--rm', '--pull', 'never', '--network', 'none',
+                       '--entrypoint', '/bin/sh', image, '-c', 'echo CONTAINER_NO_MOUNT_OK'], timeout=35)
+            self.events.put(('log', 'CHECK 4/4 — Can Docker mount the selected Windows directory?\n'))
+            mount = 'type=bind,source=' + host_folder + ',target=' + mount_point + ',readonly'
+            self._run(['docker', 'run', '--rm', '--pull', 'never', '--network', 'none',
+                       '--mount', mount, '--entrypoint', '/bin/sh', image, '-c',
+                       'test -d ' + shlex.quote(posixpath.normpath(mount_point)) + ' && echo WINDOWS_MOUNT_OK'], timeout=35)
+            self.events.put(('log', 'ALL FOUR DIAGNOSTIC CHECKS PASSED.\n'))
+            return 'DOCKER ENGINE AND WINDOWS FOLDER MOUNT: WORKING.'
+
+        self._work('Diagnose Docker Desktop and Windows file sharing', action)
 
     def check_container(self):
         name = self.name.get().strip()
@@ -527,7 +617,7 @@ class ContainerTab(tk.Frame):
             existing = inspect_container(name)
             if not existing or (existing.get('State') or {}).get('Status') != 'running':
                 raise RuntimeError('Container is not running. Click Create / Start Container first.')
-            code = self._run(['docker', 'exec', '--workdir', workdir, name, '/bin/sh', '-c', command], check=False)
+            code = self._run(['docker', 'exec', '--workdir', workdir, name, '/bin/sh', '-c', command], timeout=None, check=False)
             return ('COMMAND COMPLETED' if code == 0 else 'COMMAND FINISHED WITH NONZERO EXIT CODE ' + str(code)) + ': ' + name
 
         self._work('Run in ' + name + ': ' + command, action)

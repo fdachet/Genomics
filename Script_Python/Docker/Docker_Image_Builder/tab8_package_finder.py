@@ -983,7 +983,7 @@ class PackageFinderTab(tk.Frame):
     def search(self, retry_approved=False):
         query = self.query.get().strip()
         if not query:
-            messagebox.showwarning('Package keyword required', 'Enter a package keyword such as git.', parent=self)
+            messagebox.showwarning('Package keyword required', 'Enter a package keyword to search the selected distribution.', parent=self)
             return
         image = self._image()
         if self.source_mode.get() == 'Downloaded Docker images' and image not in self.local_docker_images:
@@ -1191,7 +1191,7 @@ class PackageFinderTab(tk.Frame):
                     continue
                 pkg, version = package_identity(path)
                 components.append({'enabled': True, 'name': pkg, 'version': version, 'kind': 'OS package',
-                                   'source': str(path), 'destination': '/usr/local/bin/', 'depends': '',
+                                   'source': str(path), 'destination': '', 'depends': '',
                                    'build_system': '', 'build_command': '', 'build_deps': '',
                                    'runtime_packages': '', 'output_rel': '', 'validation': '',
                                    'add_to_path': False, 'base_match': '', 'local_package_files': [str(path)]})
@@ -1258,7 +1258,7 @@ class PackageFinderTab(tk.Frame):
                                    '\n\nDownload the missing dependency DEB archives, then use Tab 3 > '
                                    'Install local package into builder > Browse package file(s) to select the '
                                    'original package AND its dependencies together. Check dependencies before installing. '
-                                   'A standalone git.deb is not a complete Git installation.')
+                                   'A single package archive may not include its required dependencies.')
         digest = hashlib.sha256((builder_image + ''.join(e['sha256'] for e in manifest['files'])).encode()).hexdigest()[:16]
         tag = 'component-builder-pkgs:' + digest
         with tempfile.TemporaryDirectory(prefix='docker_pkg_builder_') as work:
@@ -1296,7 +1296,7 @@ class PackageFinderTab(tk.Frame):
                 name = name[:-len(extension)]
                 break
         components.append({'enabled': True, 'name': name, 'version': '', 'kind': 'Source', 'source': file,
-                           'destination': '/usr/local/bin/', 'depends': '', 'build_system': '', 'build_command': '',
+                           'destination': '', 'depends': '', 'build_system': '', 'build_command': '',
                            'build_deps': '', 'runtime_packages': '', 'output_rel': '', 'validation': '',
                            'add_to_path': False, 'base_match': '', 'local_package_files': []})
         self.app.state['components'] = components

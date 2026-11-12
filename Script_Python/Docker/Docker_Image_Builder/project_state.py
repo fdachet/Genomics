@@ -31,7 +31,7 @@ class ProjectState(dict):
         "image_removals": [],
         "dependency_satisfactions": [],
         "compacted_image": "",
-        "show_image_components": False,
+        "show_image_components": True,
         "payloads": [],
         "sources": {},
         "runtime_libraries": {},
@@ -42,6 +42,9 @@ class ProjectState(dict):
         "compiled_artifacts": {},
         "compilation_failures": {},
         "built_image": "",
+        "last_full_image_tar": "",
+        "final_online_package_requests": [],
+        "final_local_package_paths": [],
         "package_download_policy": "approval",
         "environment_requirements": {},
         "allow_source_network": False,
@@ -50,6 +53,7 @@ class ProjectState(dict):
         "build_mode": "permissive",
         "install_planned_packages_now": True,
         "last_build_report": {},
+        "runtime_install_receipt": {},
         "build_history": [],
         "parent_provenance": {},
         "installation_overrides": [],
@@ -73,6 +77,7 @@ class ProjectState(dict):
         "package_finder_platform": "linux/amd64",
         "package_finder_custom_image": "",
         "container_config": {},
+        "recognized_elements_database": "",
     }
 
     def __init__(self, initial=None):

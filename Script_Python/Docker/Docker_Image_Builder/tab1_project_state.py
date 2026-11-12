@@ -10,6 +10,7 @@ from network_policy import POLICY_OFFLINE, POLICY_APPROVAL, normalize_policy
 from build_modes import normalize_mode
 from project_state import effective_builder_image
 from docker_image_checkpoint import save_image_checkpoint, load_image_checkpoint
+from workflow_toolbar import add_more_menu
 
 
 class ProjectStateTab(tk.Frame):
@@ -28,181 +29,104 @@ class ProjectStateTab(tk.Frame):
             pady=10,
         ).pack(fill="x")
 
+        self._checkpoint_busy = False
+        self.checkpoint_buttons = []
+        self.checkpoint_status = tk.StringVar(value="Select a Docker image TAR to load as the runtime base.")
+        self.network_policy = tk.StringVar(value=POLICY_APPROVAL)
+        self.build_mode = tk.StringVar(value="permissive")
+
+        load_frame = tk.LabelFrame(
+            self, text=" 1 — Load an existing Docker image from TAR ",
+            bg="#E8F6F3", fg="#117864", font=("Segoe UI", 11, "bold"), padx=12, pady=10,
+        )
+        load_frame.pack(fill="x", padx=12, pady=(10, 10))
+        load_button = tk.Button(
+            load_frame, text="Load Docker image from .tar", bg="#2874A6", fg="white",
+            font=("Segoe UI", 11, "bold"), padx=14, pady=6,
+            command=lambda: self._checkpoint_action("load", "runtime"),
+        )
+        load_button.pack(side="left", padx=(0, 12))
+        self.checkpoint_buttons.append(load_button)
+        tk.Label(
+            load_frame, textvariable=self.checkpoint_status, bg="#E8F6F3",
+            fg="#1B4F72", anchor="w", justify="left", wraplength=950,
+        ).pack(side="left", fill="x", expand=True)
+
         toolbar = tk.Frame(self, bg="#F4F6F7")
-        toolbar.pack(fill="x", padx=12, pady=10)
-        tk.Button(toolbar, text="Refresh", bg="#D5DBDB", command=self.refresh_from_project_state).pack(side="left", padx=3)
+        toolbar.pack(fill="x", padx=12, pady=(0, 10))
         tk.Button(toolbar, text="Save project JSON", bg="#5D6D7E", fg="white", command=self.save_json).pack(side="left", padx=3)
         tk.Button(toolbar, text="Load project JSON", bg="#34495E", fg="white", command=self.load_json).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Validate shared links", bg="#117864", fg="white", command=self.validate_links).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Show raw state", bg="#2874A6", fg="white", command=self.show_raw_state).pack(side="left", padx=3)
         self.docker_check_button = tk.Button(
             toolbar, text="Check Docker on Windows", bg="#1B4F72", fg="white",
             command=self.check_docker_on_windows,
         )
         self.docker_check_button.pack(side="left", padx=6)
+        add_more_menu(toolbar, [("Validate project paths", self.validate_links),
+                                ("Show technical project state", self.show_raw_state),
+                                ("Refresh project details", self.refresh_from_project_state)], "#F4F6F7")
         self.docker_check_status = tk.StringVar(value="Docker: not checked")
         tk.Label(toolbar, textvariable=self.docker_check_status, bg="#F4F6F7", fg="#1B4F72").pack(side="left", padx=4)
 
-        info = tk.LabelFrame(
-            self,
-            text=" Shared project data used by every tab ",
-            bg="#F4F6F7",
-            fg="#424949",
-            font=("Segoe UI", 10, "bold"),
-            padx=10,
-            pady=8,
-        )
-        info.pack(fill="x", padx=12, pady=(0, 10))
-
         self.vars = {}
-        rows = [
-            ("project_dir", "Project directory", "path_folder", self.browse_project_directory),
-            ("export_image_dir", "Export folder for newly created Docker image (.tar)", "path_folder", self.browse_export_image_dir),
-            ("runtime_base_archive", "Runtime (final) base archive", "path_file", self.browse_runtime_base_archive),
-            ("base_image", "Runtime (final) Docker tag", "automatic", None),
-            ("base_os", "Runtime OS", "automatic", None),
-            ("base_arch", "Runtime architecture", "automatic", None),
-            ("base_libc", "Runtime libc", "automatic", None),
-            ("builder_base_archive", "Builder base archive", "path_file", self.browse_builder_base_archive),
-            ("builder_image", "Builder Docker tag", "automatic", None),
-            ("builder_os", "Builder OS", "automatic", None),
-            ("builder_arch", "Builder architecture", "automatic", None),
-            ("builder_libc", "Builder libc", "automatic", None),
-            ("image_name", "Final image name", "automatic", None),
-            ("generated_context", "Generated build context", "path_folder", self.browse_generated_context),
-        ]
+        project_info = tk.LabelFrame(
+            self, text=" Project paths and output ", bg="#F4F6F7", fg="#424949",
+            font=("Segoe UI", 10, "bold"), padx=10, pady=7,
+        )
+        project_info.pack(fill="x", padx=12, pady=(0, 8))
+        runtime_info = tk.LabelFrame(
+            self, text=" RUNTIME BASE — Filesystem of the final Docker image ",
+            bg="#EAF3FA", fg="#154360", font=("Segoe UI", 10, "bold"), padx=10, pady=8,
+        )
+        runtime_info.pack(fill="x", padx=12, pady=(0, 8))
+        builder_info = tk.LabelFrame(
+            self, text=" BUILDER BASE — Temporary environment for compiling sources ",
+            bg="#F0F3F4", fg="#424949", font=("Segoe UI", 10, "bold"), padx=10, pady=8,
+        )
+        builder_info.pack(fill="x", padx=12, pady=(0, 8))
 
-        for row, (key, label, field_type, browse_command) in enumerate(rows):
-            suffix = ""
-            if field_type == "automatic":
-                suffix = "  [automatic]"
-            elif key in ("runtime_base_archive", "builder_base_archive"):
-                suffix = "  [Docker .tar]"
-
-            tk.Label(
-                info,
-                text=label + suffix + ":",
-                bg="#F4F6F7",
-                font=("Segoe UI", 9, "bold"),
-            ).grid(row=row, column=0, sticky="w", pady=3)
-
+        def add_field(frame, row, key, label, browse_command=None, extra_button=False):
+            tk.Label(frame, text=label + ":", bg=frame.cget("bg"),
+                     font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=3)
             var = tk.StringVar()
             self.vars[key] = var
-            tk.Entry(info, textvariable=var, state="readonly").grid(
-                row=row, column=1, sticky="ew", padx=8, pady=3
-            )
-
-            button_frame = tk.Frame(info, bg="#F4F6F7")
-            button_frame.grid(row=row, column=2, sticky="w", padx=(0, 4), pady=3)
-
+            tk.Entry(frame, textvariable=var, state="readonly").grid(
+                row=row, column=1, sticky="ew", padx=8, pady=3)
+            buttons = tk.Frame(frame, bg=frame.cget("bg"))
+            buttons.grid(row=row, column=2, sticky="w", pady=3)
             if browse_command is not None:
-                tk.Button(
-                    button_frame,
-                    text="Browse",
-                    bg="#D5DBDB",
-                    command=browse_command,
-                ).pack(side="left")
+                tk.Button(buttons, text="Browse", bg="#D5DBDB", command=browse_command).pack(side="left")
+            if extra_button:
+                tk.Button(buttons, text="Same as runtime", bg="#D5DBDB",
+                          command=self.use_runtime_as_builder).pack(side="left", padx=(4, 0))
+            frame.columnconfigure(1, weight=1)
 
-            if key == "builder_base_archive":
-                tk.Button(
-                    button_frame,
-                    text="Same as runtime",
-                    bg="#E5E7E9",
-                    command=self.use_runtime_as_builder,
-                ).pack(side="left", padx=(4, 0))
+        add_field(project_info, 0, "project_dir", "Project directory", self.browse_project_directory)
+        add_field(project_info, 1, "export_image_dir", "Final image export folder (.tar)", self.browse_export_image_dir)
+        add_field(project_info, 2, "image_name", "Final image name [automatic]")
+        add_field(project_info, 3, "generated_context", "Generated build context", self.browse_generated_context)
 
-        info.columnconfigure(1, weight=1)
+        add_field(runtime_info, 0, "runtime_base_archive", "Runtime Docker TAR [automatic]")
+        add_field(runtime_info, 1, "base_image", "Runtime Docker tag [automatic]")
+        add_field(runtime_info, 2, "base_os", "Operating system [automatic]")
+        add_field(runtime_info, 3, "base_arch", "Architecture [automatic]")
+        add_field(runtime_info, 4, "base_libc", "libc [automatic]")
 
+        add_field(builder_info, 0, "builder_base_archive", "Builder Docker TAR [automatic]", extra_button=True)
+        add_field(builder_info, 1, "builder_image", "Builder Docker tag [automatic]")
+        add_field(builder_info, 2, "builder_os", "Operating system [automatic]")
+        add_field(builder_info, 3, "builder_arch", "Architecture [automatic]")
+        add_field(builder_info, 4, "builder_libc", "libc [automatic]")
         tk.Label(
-            info,
-            text=(
-                "The export folder is only the destination for the newly created final Docker image .tar. "
-                "Runtime = filesystem used by the final image. Builder = temporary environment used to compile software. "
-                "Docker tags identify usable local images. The Save buttons create reusable TAR files; "
-                "local package installation can save the updated base to TAR automatically."
-            ),
-            bg="#F4F6F7",
-            fg="#566573",
-            justify="left",
-            anchor="w",
-        ).grid(row=len(rows), column=0, columnspan=3, sticky="ew", pady=(7, 2))
-
-        checkpoint_frame = tk.LabelFrame(
-            self, text=" Save / reload the selected Docker image — reusable checkpoint ",
-            bg="#E8F6F3", fg="#117864", font=("Segoe UI", 10, "bold"), padx=10, pady=7,
-        )
-        checkpoint_frame.pack(fill="x", padx=12, pady=(0, 8))
-        checkpoint_buttons = tk.Frame(checkpoint_frame, bg="#E8F6F3")
-        checkpoint_buttons.pack(fill="x")
-        self.checkpoint_buttons = []
-        for caption, mode, role, color in (
-            ("Save runtime image to TAR", "save", "runtime", "#148F77"),
-            ("Save builder image to TAR", "save", "builder", "#148F77"),
-            ("Save last built image to TAR", "save", "built", "#117A65"),
-            ("Load TAR as runtime", "load", "runtime", "#2874A6"),
-            ("Load TAR as builder", "load", "builder", "#2874A6"),
-        ):
-            button = tk.Button(
-                checkpoint_buttons, text=caption, bg=color, fg="white",
-                command=lambda action=mode, selected_role=role: self._checkpoint_action(action, selected_role),
-            )
-            button.pack(side="left", padx=(0, 8), pady=2)
-            self.checkpoint_buttons.append(button)
-        self.checkpoint_both = tk.BooleanVar(value=True)
-        tk.Checkbutton(
-            checkpoint_frame, text="Use the saved/loaded image for BOTH runtime and builder",
-            variable=self.checkpoint_both, bg="#E8F6F3", anchor="w",
-        ).pack(anchor="w", pady=(4, 0))
-        self.checkpoint_status = tk.StringVar(value="Ready. Save the current working image to a .tar file; reload it later to continue adding components.")
-        tk.Label(
-            checkpoint_frame, textvariable=self.checkpoint_status, bg="#E8F6F3",
-            fg="#1B4F72", anchor="w", justify="left", wraplength=1300,
-        ).pack(fill="x", pady=(4, 0))
-        self._checkpoint_busy = False
-
-        network_options = tk.LabelFrame(self, text=" Package downloads and build network policy ", bg="#F4F6F7", padx=10, pady=6)
-        network_options.pack(fill="x", padx=12, pady=(0, 8))
-        self.network_policy = tk.StringVar()
-        ttk.Radiobutton(network_options, text="Offline only: never download dependencies", variable=self.network_policy, value=POLICY_OFFLINE, command=self._save_network_policy).pack(side="left", padx=8)
-        ttk.Radiobutton(network_options, text="Ask before downloading missing OS packages", variable=self.network_policy, value=POLICY_APPROVAL, command=self._save_network_policy).pack(side="left", padx=8)
-        tk.Label(network_options, text="Applies to the builder and final runtime. Each online build requires confirmation.", bg="#F4F6F7", fg="#566573").pack(side="left", padx=8)
-
-        mode_options = tk.LabelFrame(self, text=" Dependency requirements during image builds ", bg="#F4F6F7", padx=10, pady=6)
-        mode_options.pack(fill="x", padx=12, pady=(0, 8))
-        self.build_mode = tk.StringVar()
-        for label, value in (("Permissive: build and flag missing requirements", "permissive"), ("Strict: require all dependencies", "strict"), ("Assembly only: skip installations", "assembly")):
-            ttk.Radiobutton(mode_options, text=label, variable=self.build_mode, value=value, command=self._save_build_mode).pack(side="left", padx=8)
+            builder_info, text="Use 'Same as runtime' to clear the separate builder selection."
+            " Separate builder images can be selected in the base inventory tab.",
+            bg=builder_info.cget("bg"), fg="#566573", anchor="w",
+        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         counts = tk.Frame(self, bg="#F4F6F7")
         counts.pack(fill="x", padx=12, pady=(0, 10))
         self.count_text = tk.StringVar()
-        tk.Label(
-            counts,
-            textvariable=self.count_text,
-            bg="#D6EAF8",
-            fg="#154360",
-            anchor="w",
-            justify="left",
-            padx=10,
-            pady=8,
-        ).pack(fill="x")
-
-        tk.Label(
-            self,
-            text="Workflow linkage",
-            bg="#F4F6F7",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", padx=12)
-
-        columns = ("stage", "status", "shared_data")
-        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=10)
-        self.tree.heading("stage", text="Stage")
-        self.tree.heading("status", text="Status")
-        self.tree.heading("shared_data", text="Shared state")
-        self.tree.column("stage", width=180, anchor="w")
-        self.tree.column("status", width=130, anchor="center")
-        self.tree.column("shared_data", width=900, anchor="w")
-        self.tree.pack(fill="both", expand=True, padx=12, pady=(4, 8))
+        tk.Label(counts, textvariable=self.count_text, bg="#D6EAF8", fg="#154360",
+                 anchor="w", justify="left", padx=10, pady=8).pack(fill="x")
 
         messages_header = tk.Frame(self, bg="#F4F6F7")
         messages_header.pack(fill="x", padx=12)
@@ -309,13 +233,13 @@ class ProjectStateTab(tk.Frame):
         if self._checkpoint_busy:
             return
         state = self._state()
-        both = bool(self.checkpoint_both.get())
+        both = False
         if role == "runtime":
             image = str(state.get("base_image", "") or "").strip()
         elif role == "builder":
             image = effective_builder_image(state)
         else:
-            image = str(state.get("built_image", "") or "").strip()
+            image = str(state.get("built_image", "") or state.get("image_name", "") or "").strip()
         if action == "save":
             if not image:
                 messagebox.showerror("Save Docker image", f"No {role} image is currently selected.", parent=self)
@@ -405,17 +329,13 @@ class ProjectStateTab(tk.Frame):
         if action == "load":
             system = result["system"]
             inventory = result["inventory"]
-            if not inventory:
-                if state.get("base_image") == tag:
-                    inventory = state.get("base_inventory", {})
-                    system = system or state.get("base_system", {})
-                elif effective_builder_image(state) == tag:
-                    inventory = state.get("builder_inventory", {})
-                    system = system or state.get("builder_system", {})
             if role == "runtime" or both:
                 changes.update(runtime_base_archive=archive, base_image=tag, base_system=system, base_inventory=inventory)
             if role == "builder" or both:
-                changes.update(builder_base_archive=archive, builder_image=tag, builder_system=system, builder_inventory=inventory)
+                changes.update(builder_base_archive="" if both else archive,
+                               builder_image="" if both else tag,
+                               builder_system={} if both else system,
+                               builder_inventory={} if both else inventory)
         else:
             if role == "runtime" or (role == "builder" and both and str(state.get("base_image", "") or "") == tag):
                 changes["runtime_base_archive"] = archive
@@ -431,10 +351,14 @@ class ProjectStateTab(tk.Frame):
         self.checkpoint_status.set(f"Image {verb}: {tag}  |  TAR: {archive}")
         self._checkpoint_log(f"Image {verb} successfully: {tag}\nTAR: {archive}\n")
         self.refresh_from_project_state()
+        if action == "load":
+            base_tab = getattr(self.app, "base_tab", None)
+            if base_tab is not None:
+                self.after(0, base_tab.refresh_selected_archives)
         messagebox.showinfo(
             "Docker image checkpoint",
             f"Working image {verb} successfully.\n\nDocker tag: {tag}\nTAR: {archive}\n\n"
-            "You can now continue adding components. Save your project JSON separately to preserve the component list.",
+            "You can now inspect the installed software in Tab 2 and continue adding components.",
             parent=self,
         )
 
@@ -635,8 +559,12 @@ class ProjectStateTab(tk.Frame):
 
     def refresh_from_project_state(self):
         state = self._state()
-        self.network_policy.set(normalize_policy(state.get("package_download_policy")))
-        self.build_mode.set(normalize_mode(state.get("build_mode")))
+        if state.get("package_download_policy") != POLICY_APPROVAL:
+            state["package_download_policy"] = POLICY_APPROVAL
+        if state.get("build_mode") != "permissive":
+            state["build_mode"] = "permissive"
+        self.network_policy.set(POLICY_APPROVAL)
+        self.build_mode.set("permissive")
         system = state.get("base_system", {}) if isinstance(state.get("base_system", {}), dict) else {}
         inventory = state.get("base_inventory", {}) if isinstance(state.get("base_inventory", {}), dict) else {}
         packages = inventory.get("packages", {}) if isinstance(inventory.get("packages", {}), dict) else {}
@@ -652,9 +580,9 @@ class ProjectStateTab(tk.Frame):
         values = {
             "project_dir": state.get("project_dir", ""),
             "export_image_dir": state.get("export_image_dir", ""),
-            "runtime_base_archive": state.get("runtime_base_archive", "") or ("(Runtime image in Docker Desktop; click Save runtime image to TAR)" if state.get("base_image") else ""),
+            "runtime_base_archive": state.get("runtime_base_archive", "") or ("(Docker tag only; load a TAR using the button above)" if state.get("base_image") else ""),
             "base_image": state.get("base_image", ""),
-            "builder_base_archive": state.get("builder_base_archive", "") or ("(Builder image in Docker Desktop; click Save builder image to TAR)" if explicit_builder else "(same as runtime)"),
+            "builder_base_archive": state.get("builder_base_archive", "") or ("(Builder Docker tag only)" if explicit_builder else "(same as runtime)"),
             "builder_image": effective_builder_image(state) or "(same as runtime)",
             "base_os": system.get("os", ""),
             "base_arch": system.get("architecture", ""),
@@ -684,29 +612,6 @@ class ProjectStateTab(tk.Frame):
             f"Components: {len(components)}"
         )
 
-        source_count = sum(1 for c in components if str(c.get("kind", "")).lower() == "source" and c.get("enabled", True))
-        runtime_pkg_count = sum(
-            1 for c in components
-            if c.get("enabled", True) and str(c.get("runtime_packages", "")).strip()
-        )
-
-        ready_count = 0
-        for component in components:
-            if component.get("enabled", True) and str(component.get("kind", "")).lower() == "source":
-                record = (state.get("compiled_artifacts", {}) or {}).get(str(component.get("name", "")))
-                ready_count += bool(record and Path(str(record.get("artifact", ""))).is_file())
-        rows = [
-            ("2. Base Inventory", "READY" if state.get("base_image") else "MISSING", "Inspect runtime and builder selected in Tab 1"),
-            ("3. Add Components", f"{len(components)} defined", "Register sources, binaries, packages and destinations"),
-            ("4. Compile Sources", f"{ready_count}/{source_count} artifacts recorded", "Compile using the builder and preserve outputs"),
-            ("5. Runtime Libraries", f"{runtime_pkg_count} component(s) with packages", "Analyze dependencies against the selected runtime"),
-            ("6. Build Docker Image", "READY" if state.get("base_image") else "WAITING", "Assemble runtime, saved compiled outputs, binaries and libraries"),
-            ("7. Verify / Export", "AVAILABLE" if state.get("image_name") else "WAITING", "Run tests in final image and export verified result"),
-        ]
-
-        self.tree.delete(*self.tree.get_children())
-        for index, row in enumerate(rows):
-            self.tree.insert("", "end", iid=str(index), values=row)
 
     def validate_links(self):
         state = self._state()

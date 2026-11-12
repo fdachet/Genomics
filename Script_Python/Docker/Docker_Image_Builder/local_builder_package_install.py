@@ -325,8 +325,6 @@ def install_local_packages_in_builder(builder_image, files, cancel=None, progres
             checks.append('apk info -e ' + name + ' >/dev/null')
         else:
             checks.append('rpm -q ' + name + ' >/dev/null')
-        if package['name'] == 'git':
-            checks.append('command -v git >/dev/null && git --version')
     checks.append('echo LOCAL_BUILDER_PACKAGES_VERIFIED')
     _docker_shell(tag, 'set -eu; ' + '; '.join(checks), timeout=90, cancel=cancel, progress=progress)
     return {'builder_from': image, 'builder_image': tag, 'builder_info': info,

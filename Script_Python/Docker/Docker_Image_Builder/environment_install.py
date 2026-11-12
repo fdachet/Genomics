@@ -19,7 +19,7 @@ def language_lines(plan):
     config = plan['config']
     modules = plan['language_packages']
     if plan['python_required']:
-        binary = 'python' + '.'.join(str(x) for x in pv[:2]) if len(pv) >= 2 else 'python3'
+        binary = ('python' + str(pv[0])) if pv else 'python'
         lines += shell_run('command -v ' + shlex.quote(binary) + ' >/dev/null || { echo "Required Python executable unavailable: ' + binary + '" >&2; exit 52; }')
         if pv:
             expected = ','.join(str(x) for x in (pv + (0,) * (3 - len(pv))))

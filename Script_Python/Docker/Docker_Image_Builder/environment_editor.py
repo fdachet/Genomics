@@ -80,12 +80,13 @@ class EnvironmentEditor(tk.Toplevel):
         return result
 
     def preview(self):
-        result = detect(self.state.get('components', []))
-        lines = ['Requirements detected from registered files (review before use):', '']
+        result = detect(self.state.get('components', []), scope='runtime')
+        lines = ['Final runtime requirements detected from deployed scripts and project manifests:', '']
         for key, values in result['packages'].items():
             lines.append(key + ': ' + (', '.join(values) or 'none'))
         lines += ['', 'Minimum versions declared in manifests: ' + ', '.join(key + ' ' + val for key, val in result['versions'].items() if val), 'Language hints: ' + ', '.join(key for key, present in result['hints'].items() if present)]
-        lines += ['', *result['issues']]
+        build = detect(self.state.get('components', []), scope='build')
+        lines += ['', 'Build-only source detection (not copied into final-runtime requirements):', 'Files: ' + (', '.join(build.get('files', [])) or 'none'), 'Language hints: ' + (', '.join(key for key, active in build['hints'].items() if active) or 'none'), '', *result['issues']]
         window = tk.Toplevel(self)
         window.title('Detected requirements')
         window.geometry('900x480')
@@ -95,15 +96,19 @@ class EnvironmentEditor(tk.Toplevel):
         text.configure(state='disabled')
 
     def insert_detected(self):
-        result = detect(self.state.get('components', []))
+        result = detect(self.state.get('components', []), scope='runtime')
         for key, additions in result['packages'].items():
+            if key not in self.fields:
+                continue
             widget = self.fields[key]
             existing = widget.get('1.0', 'end').strip()
             combined = existing.splitlines() + additions
             seen = list(dict.fromkeys(value.strip() for value in combined if value.strip()))
             widget.delete('1.0', 'end')
             widget.insert('1.0', '\n'.join(seen))
-        messagebox.showinfo('Detected requirements', 'Detected packages were added to the editable fields. Verify package names and versions before building.', parent=self)
+        unknown = result['packages'].get('unclassified_r_packages') or []
+        detail = ('\n\nChoose the correct repository (CRAN or Bioconductor) for these R packages before installation:\n' + ', '.join(unknown)) if unknown else ''
+        messagebox.showinfo('Detected requirements', 'Only FINAL-RUNTIME package declarations were added. Build-only source requirements are excluded. Verify the listed packages and versions before building.' + detail, parent=self)
 
     def save(self):
         data = self.data()

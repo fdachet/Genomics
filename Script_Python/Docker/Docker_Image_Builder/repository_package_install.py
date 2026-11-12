@@ -40,6 +40,26 @@ def infer_packages_from_install_command(command):
         except ValueError:
             return []
     return validate_packages(names)
+
+
+def custom_install_problem(command):
+    custom = str(command or '').strip()
+    if not custom:
+        return ''
+    if re.match(r'^sudo(?:\s|$)', custom):
+        return 'Docker executes installation commands as root, and sudo may be unavailable.'
+    try:
+        words = shlex.split(custom)
+    except ValueError:
+        return ''
+    while words and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=[^\s]*', words[0]):
+        words.pop(0)
+    if words and words[0] in ('apt', 'apt-get', 'yum', 'dnf', 'microdnf'):
+        if 'install' in words[1:] and not any(flag in ('-y', '--yes', '--assume-yes', '--assumeyes') for flag in words[1:]):
+            return 'This custom package-manager command may ask for interactive confirmation, which Docker builds cannot provide. Add -y or leave the custom command blank for automatic noninteractive installation.'
+    return ''
+
+
 def archived_repository_recommended(info):
     family = str(info.get('id') or '').lower()
     try:
@@ -55,11 +75,16 @@ def repository_install_command(info, packages, use_archive=False, allow_unverifi
     custom = str(custom_command or '').strip()
     if custom and ('\n' in custom or '\r' in custom or '\x00' in custom or len(custom) > 4000 or custom.endswith('\\')):
         raise ValueError('The custom install command must be one safe Dockerfile RUN line of at most 4,000 characters.')
+    problem = custom_install_problem(custom)
+    if problem:
+        raise ValueError(problem + ' Clear the custom command field to use automatic package installation.')
     if not custom and not names:
         raise ValueError('Choose one or more OS package names, or provide a custom installation command.')
     manager = str(info.get('manager') or '').lower()
     if allow_unverified and not use_archive:
         raise ValueError('Allowing unauthenticated packages requires an explicitly selected archived repository.')
+    if custom and allow_unverified:
+        raise ValueError('The expired-signature approval applies to the automatic package installer only. Clear the custom command field to enable it; custom commands are not rewritten with APT authentication overrides.')
     quoted = ' '.join(shlex.quote(name) for name in names)
     if custom:
         if use_archive:
@@ -180,10 +205,6 @@ def install_repository_packages_in_image(image, packages, role='builder', use_ar
             check_parts.append('rpm -q ' + quoted + ' >/dev/null')
     for command in commands:
         check_parts.append('command -v ' + shlex.quote(command) + ' >/dev/null')
-        if command in ('python', 'python2', 'python3', 'git', 'R', 'Rscript'):
-            check_parts.append(shlex.quote(command) + ' --version 2>&1 | head -n 1')
-        elif command == 'perl':
-            check_parts.append("perl -e 'print $^V, qq(\\n)'")
     check_parts.append('echo REPOSITORY_PACKAGE_INSTALL_VERIFIED')
     if progress:
         progress('Verifying requested packages and commands inside ' + tag + '...')

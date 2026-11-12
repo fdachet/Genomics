@@ -7,7 +7,6 @@ import sys
 from pathlib import Path
 
 FIELDS = ('java_version', 'python_version', 'python_packages', 'r_version', 'cran_packages', 'bioc_packages', 'perl_version', 'cpan_modules', 'os_packages', 'pre_commands', 'post_commands', 'verify_commands', 'dockerfile_directives')
-BIOC = {'DESeq2', 'DEXSeq', 'DRIMSeq', 'edgeR', 'limma', 'BiocGenerics', 'S4Vectors', 'IRanges', 'GenomicRanges', 'SummarizedExperiment', 'SingleCellExperiment', 'BiocParallel', 'Biostrings', 'GenomicFeatures', 'AnnotationDbi', 'GenomicAlignments', 'tximport', 'clusterProfiler', 'ComplexHeatmap', 'scater', 'scran', 'batchelor', 'BiocManager', 'org.Hs.eg.db', 'rtracklayer', 'rhdf5', 'BiocFileCache'}
 PERL_CORE = {'strict', 'warnings', 'utf8', 'feature', 'lib', 'vars', 'constant', 'integer', 'bytes', 'base', 'parent', 'Exporter', 'Carp', 'Cwd', 'File::Path', 'File::Basename', 'File::Spec', 'File::Find', 'Getopt::Long', 'Data::Dumper', 'POSIX', 'FindBin', 'IO::File', 'Scalar::Util', 'List::Util', 'Storable', 'Time::HiRes', 'Digest::SHA', 'JSON::PP'}
 VERSION_RE = re.compile(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?$')
 
@@ -67,16 +66,22 @@ def merge(base, detected):
     return result
 
 
-def file_candidates(components, limit=150):
+def file_candidates(components, limit=150, scope='runtime'):
     result = []
     allowed = {'.py', '.r', '.pl', '.pm', '.toml'}
     names = {'requirements.txt', 'description', 'renv.lock', 'cpanfile', 'pyproject.toml', 'setup.cfg'}
     for component in components:
         if not isinstance(component, dict) or not component.get('enabled', True):
             continue
-        kind = str(component.get('kind', '')).lower()
-        if kind not in ('source', 'folder', 'other', 'script'):
-            continue
+        kind = str(component.get('kind', '')).lower().strip()
+        if scope == 'build':
+            if kind != 'source':
+                continue
+        elif scope == 'runtime':
+            if kind not in ('script', 'folder', 'other'):
+                continue
+        else:
+            raise ValueError('Unknown dependency detection scope: ' + str(scope))
         raw = str(component.get('source', '') or '')
         root = Path(raw)
         if not root.exists():
@@ -90,8 +95,14 @@ def file_candidates(components, limit=150):
         for path in files:
             if len(result) >= limit:
                 return result
-            if (path.suffix.lower() in allowed or path.name.lower() in names) and path.stat().st_size < 1500000:
-                result.append(path)
+            if scope == 'runtime' and kind in ('folder', 'other') and root.is_dir() and path.name.lower() not in names:
+                continue
+            if path.suffix.lower() in allowed or path.name.lower() in names:
+                try:
+                    if path.stat().st_size < 1500000:
+                        result.append(path)
+                except OSError:
+                    continue
     return result
 
 
@@ -99,20 +110,30 @@ def _read(path):
     return path.read_text(encoding='utf-8-sig', errors='replace')
 
 
-def detect(components):
-    found = {key: set() for key in ('python_packages', 'cran_packages', 'bioc_packages', 'cpan_modules')}
+def detect(components, scope='runtime'):
+    found = {key: set() for key in ('python_packages', 'cran_packages', 'bioc_packages', 'cpan_modules', 'unclassified_r_packages')}
     declared = {key: set() for key in found}
     hints = {'python': False, 'r': False, 'perl': False}
     evidence = []
     versions = {'python_version': '', 'r_version': '', 'perl_version': ''}
     standard = getattr(sys, 'stdlib_module_names', set())
-    for path in file_candidates(components):
+    inspected_files = []
+    for path in file_candidates(components, scope=scope):
+        inspected_files.append(str(path))
         name = path.name.lower()
         suffix = path.suffix.lower()
         try:
             content = _read(path)
             if suffix == '.py':
                 hints['python'] = True
+                shebang = content.splitlines()[0] if content else ''
+                if shebang.startswith('#!'):
+                    detected_python = re.search(r'(?:^|[/\s])python(2|3)(?:\.(\d+))?(?:\s|$)', shebang)
+                    if detected_python:
+                        candidate = detected_python.group(1) + ('.' + detected_python.group(2) if detected_python.group(2) else '')
+                        current = versions['python_version']
+                        if not current or version(candidate, 'Python version') > version(current, 'Python version'):
+                            versions['python_version'] = candidate
                 tree = ast.parse(content)
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Import):
@@ -154,9 +175,9 @@ def detect(components):
             if suffix == '.r':
                 hints['r'] = True
                 for pkg in re.findall(r'\b(?:library|require|requireNamespace)\s*\(\s*["\']?([A-Za-z][A-Za-z0-9.]*)', content):
-                    found['bioc_packages' if pkg in BIOC and pkg != 'BiocManager' else 'cran_packages'].add(pkg)
+                    found['unclassified_r_packages'].add(pkg)
                 for pkg in re.findall(r'\b([A-Za-z][A-Za-z0-9.]*):::{0,1}', content):
-                    found['bioc_packages' if pkg in BIOC and pkg != 'BiocManager' else 'cran_packages'].add(pkg)
+                    found['unclassified_r_packages'].add(pkg)
             if name == 'description':
                 hints['r'] = True
                 bound = re.search(r'(?ms)^Depends:\s*.*?R\s*\(\s*>=\s*(\d+\.\d+(?:\.\d+)?)', content)
@@ -167,8 +188,8 @@ def detect(components):
                         pkg = re.match(r'([A-Za-z][A-Za-z0-9.]*)', entry.strip())
                         if pkg and pkg.group(1) != 'R':
                             value = pkg.group(1)
-                            found['bioc_packages' if value in BIOC and value != 'BiocManager' else 'cran_packages'].add(value)
-                            declared['bioc_packages' if value in BIOC and value != 'BiocManager' else 'cran_packages'].add(value)
+                            found['unclassified_r_packages'].add(value)
+                            declared['unclassified_r_packages'].add(value)
             if name == 'renv.lock':
                 hints['r'] = True
                 obj = json.loads(content)
@@ -193,20 +214,12 @@ def detect(components):
                             declared['cpan_modules'].add(pkg)
         except (OSError, ValueError, SyntaxError, UnicodeError) as exc:
             evidence.append(str(path) + ': ' + str(exc))
-    return {'packages': {key: sorted(value, key=str.lower) for key, value in found.items()}, 'declared': {key: sorted(value, key=str.lower) for key, value in declared.items()}, 'hints': hints, 'versions': versions, 'issues': evidence}
-
-
-def _python_package(version_tuple, family):
-    if version_tuple:
-        if len(version_tuple) < 2:
-            return 'python3'
-        return 'python' + '.'.join(str(x) for x in version_tuple[:2])
-    return 'python3'
+    return {'packages': {key: sorted(value, key=str.lower) for key, value in found.items()}, 'declared': {key: sorted(value, key=str.lower) for key, value in declared.items()}, 'hints': hints, 'versions': versions, 'issues': evidence, 'files': inspected_files, 'scope': scope}
 
 
 def package_plan(state, family, java_plan=None):
     config = normalize(state.get('environment_requirements'))
-    detected = detect(state.get('components', [])) if config['auto_detect'] else {'packages': {}, 'declared': {}, 'hints': {}, 'versions': {}, 'issues': []}
+    detected = detect(state.get('components', []), scope='runtime') if config['auto_detect'] else {'packages': {}, 'declared': {}, 'hints': {}, 'versions': {}, 'issues': [], 'files': []}
     combined = merge(config, detected['declared'])
     def required_version(key, label):
         configured = version(config[key], label)
@@ -219,30 +232,21 @@ def package_plan(state, family, java_plan=None):
     require_r = bool(r_ver or combined['cran_packages'] or combined['bioc_packages'] or detected['hints'].get('r'))
     require_perl = bool(perl_ver or combined['cpan_modules'] or detected['hints'].get('perl'))
     os_packages = items(config['os_packages'])
-    if require_python:
-        os_packages += [_python_package(python_ver, family)]
-        if combined['python_packages']:
-            if family == 'apt':
-                os_packages.append(_python_package(python_ver, family) + '-venv')
-            if family == 'rpm':
-                os_packages.append('python3-pip')
-            if family == 'apk':
-                os_packages.append('py3-pip')
-    if require_r:
-        os_packages.append('r-base' if family == 'apt' else 'R')
-        if family == 'apt' and (combined['cran_packages'] or combined['bioc_packages']):
-            os_packages += ['r-base-dev', 'build-essential']
-    if require_perl:
-        os_packages.append('perl')
-        if combined['cpan_modules']:
-            os_packages.append({'apt': 'cpanminus', 'rpm': 'perl-App-cpanminus', 'apk': 'perl-app-cpanminus'}.get(family, 'cpanminus'))
+    unresolved = []
+    for required, language in ((require_python, 'Python'), (require_r, 'R'), (require_perl, 'Perl')):
+        if required:
+            unresolved.append(language + ' runtime required: check the selected image and explicitly choose the appropriate OS package if missing.')
+    if require_python and not python_ver:
+        unresolved.append('Python interpreter version not declared for deployed runtime scripts. Do not assume Python 3; verify the script shebang and select a compatible version.')
+    if detected['declared'].get('unclassified_r_packages'):
+        unresolved.append('R package repositories cannot be inferred from names alone: choose CRAN or Bioconductor for ' + ', '.join(detected['declared']['unclassified_r_packages']))
     resolved = list(dict.fromkeys(os_packages))
     language_packages = sum((combined[key] for key in combined), [])
     extra_network = bool(language_packages or (config['allow_custom_network'] and (config['pre_commands'] or config['post_commands'])))
     return {'config': config, 'detected': detected, 'packages': resolved, 'language_packages': combined,
             'python_version': python_ver, 'r_version': r_ver, 'perl_version': perl_ver,
             'python_required': require_python, 'r_required': require_r, 'perl_required': require_perl,
-            'requires_network_permission': extra_network, 'issues': detected['issues']}
+            'requires_network_permission': extra_network, 'issues': detected['issues'], 'unresolved': unresolved}
 
 
 def custom_directives(text):
@@ -257,3 +261,48 @@ def custom_directives(text):
             raise ValueError('Unsupported additional Dockerfile directive: ' + line)
         result.append(line)
     return result
+
+
+def runtime_language_report(state):
+    plan = package_plan(state, '')
+    config = plan['config']
+    detected = plan['detected']
+    build = detect(state.get('components', []), scope='build') if config['auto_detect'] else {'hints': {}, 'files': [], 'versions': {}, 'declared': {}}
+    lines = ['FINAL RUNTIME INTERPRETER REQUIREMENTS', '']
+    for language, field, packages, required, executable in (
+        ('Python', 'python_version', 'python_packages', 'python_required', 'python'),
+        ('R', 'r_version', 'cran_packages', 'r_required', 'Rscript'),
+        ('Perl', 'perl_version', 'cpan_modules', 'perl_required', 'perl'),
+    ):
+        explicit = config[field]
+        explicit_packages = items(config[packages], spec=(packages == 'python_packages'))
+        hints = bool(detected['hints'].get(language.lower()))
+        declared_packages = detected['declared'].get(packages, [])
+        present = bool(plan[required])
+        lines.append(language + ': ' + ('REQUIRED OR REQUESTED' if present else 'NOT REQUIRED BY CURRENT RUNTIME CONFIGURATION'))
+        lines.append('  Explicit minimum version: ' + (explicit or 'none'))
+        lines.append('  Explicit packages: ' + (', '.join(explicit_packages) or 'none'))
+        lines.append('  Detected deployed script/project: ' + ('yes' if hints else 'no'))
+        lines.append('  Packages declared by runtime manifests: ' + (', '.join(declared_packages) or 'none'))
+        if not present:
+            lines.append('  No automatic ' + executable + ' verification will be generated.')
+        elif language == 'Python' and not plan['python_version']:
+            lines.append('  Python major version unspecified. The default command is python, not python3.')
+        lines.append('')
+    lines.append('FILES CONSIDERED FOR FINAL RUNTIME')
+    lines.extend('  ' + name for name in detected.get('files', []))
+    if not detected.get('files'):
+        lines.append('  none')
+    lines += ['', 'BUILD-ONLY SOURCE HINTS (NOT INFERRED AS FINAL-IMAGE REQUIREMENTS)']
+    for language in ('python', 'r', 'perl'):
+        if build['hints'].get(language):
+            lines.append('  ' + language + ': source files or build manifests detected')
+    lines.extend('  ' + name for name in build.get('files', []))
+    if not build.get('files'):
+        lines.append('  none')
+    lines += ['', 'LIMITATION: optional scripts, custom commands, and dynamic program calls require separate testing.',
+              'Explicit runtime settings and custom verification commands are never silently removed.']
+    for key in ('pre_commands', 'post_commands', 'verify_commands', 'dockerfile_directives'):
+        if config[key]:
+            lines.append('Custom runtime field ' + key + ' contains user-provided commands; review it for interpreter requirements.')
+    return '\n'.join(lines)

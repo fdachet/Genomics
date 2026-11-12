@@ -1,4 +1,5 @@
 import shlex
+import re
 import subprocess
 import threading
 import queue
@@ -19,7 +20,26 @@ from project_state import effective_builder_image
 from repository_package_dialog import RepositoryPackageInstallDialog
 from source_documentation import discover_build_documentation, open_build_documentation, show_build_documentation
 from network_policy import POLICY_OFFLINE, normalize_policy, package_names, inspect_packages, permission_message, validate_packages
-from source_build_dependencies import TOOLS, discover_build_requirements, inspect_builder_commands, suggested_package, builder_command_preflight, valid_executable_path
+from source_build_dependencies import discover_build_requirements, inspect_builder_commands, suggested_package, builder_command_preflight, valid_executable_path
+from recognized_elements import entry_category, recognized_names, require_dependencies, valid_name
+
+
+STATUS_WORDS = re.compile(r'\b(?:NOT INSTALLED|INSTALLED|MISSING)\b', flags=re.IGNORECASE)
+INSTALLED_COLOR = '#173F73'
+MISSING_COLOR = '#8B1E1E'
+
+
+def insert_colored_status(widget, text):
+    text = str(text)
+    offset = 0
+    for match in STATUS_WORDS.finditer(text):
+        if match.start() > offset:
+            widget.insert('end', text[offset:match.start()])
+        token = match.group()
+        widget.insert('end', token, 'missing_status' if token.upper() in ('MISSING', 'NOT INSTALLED') else 'installed_status')
+        offset = match.end()
+    if offset < len(text):
+        widget.insert('end', text[offset:])
 
 
 def build_command_with_output_fallback(command, output_relative):
@@ -36,13 +56,10 @@ def requirements_for_source(component, command=None):
                                                component.get('build_command', '') if command is None else command)
     names = {item['command'] for item in requirements}
     for name in component.get('manual_required_build_tools', []) or []:
-        if name in TOOLS and name not in names:
+        if valid_name(name) and name not in names:
             requirements.append({'command': name, 'evidence': ['Manually required']})
             names.add(name)
-    if 'javac' in names and 'java' not in names:
-        requirements.append({'command': 'java', 'evidence': ['Java compiler runtime']})
-        names.add('java')
-    return sorted(requirements, key=lambda item: item['command'])
+    return require_dependencies(requirements)
 
 
 def describe_builder_tool_status(requirements, report, choices=None):
@@ -113,6 +130,8 @@ class BuildToolPlanDialog(tk.Toplevel):
         for key, heading, width in specs:
             self.tree.heading(key, text=heading)
             self.tree.column(key, width=width, minwidth=70)
+        self.tree.tag_configure('installed_status', foreground=INSTALLED_COLOR)
+        self.tree.tag_configure('missing_status', foreground=MISSING_COLOR)
         scroll_y = ttk.Scrollbar(frame, orient='vertical', command=self.tree.yview)
         scroll_x = ttk.Scrollbar(frame, orient='horizontal', command=self.tree.xview)
         self.tree.configure(yscrollcommand=scroll_y.set, xscrollcommand=scroll_x.set)
@@ -146,17 +165,7 @@ class BuildToolPlanDialog(tk.Toplevel):
         self._begin_check()
 
     def _label(self, command):
-        if command in ('python', 'python2', 'python3', 'pip', 'pip3'):
-            return 'Python'
-        if command == 'perl':
-            return 'Perl'
-        if command in ('java', 'javac', 'mvn', 'gradle'):
-            return 'Java'
-        if command in ('gcc', 'g++', 'cc', 'clang', 'clang++', 'gfortran', 'ld', 'ar'):
-            return 'C / C++ / Fortran'
-        if command in ('R', 'Rscript'):
-            return 'R'
-        return 'Build utility'
+        return entry_category(command)
 
     def _populate(self):
         selected = self.tree.selection()
@@ -176,7 +185,8 @@ class BuildToolPlanDialog(tk.Toplevel):
                            'Path: ' + choice['executable'] if choice.get('executable') else '')
             self.tree.insert('', 'end', iid=name, values=(self._label(name), name, status,
                              existing.get('version', ''), existing.get('path', ''), suggested,
-                             chosen_text, ', '.join(item.get('evidence', []))))
+                             chosen_text, ', '.join(item.get('evidence', []))),
+                             tags=('missing_status',) if status == 'MISSING' else ('installed_status',) if status == 'FOUND' else ())
         if chosen and self.tree.exists(chosen):
             self.tree.selection_set(chosen)
 
@@ -319,13 +329,14 @@ class BuildToolPlanDialog(tk.Toplevel):
         if name is None:
             return
         name = name.strip()
-        if name not in TOOLS:
-            messagebox.showerror('Build command', 'Choose a recognized executable name, such as python, perl, java, javac, g++, or Rscript.', parent=self)
+        if not valid_name(name):
+            messagebox.showerror('Build command', 'Enter a valid executable name containing letters, digits, underscores, plus signs, dots, or hyphens.', parent=self)
             return
+        if name not in recognized_names():
+            messagebox.showinfo('Custom build executable', 'This executable is not yet in the recognition database. It can still be checked as a manual build requirement. Add it in Tab 10 to recognize it automatically in other source projects.', parent=self)
         if name not in {item['command'] for item in self.requirements}:
             self.requirements.append({'command': name, 'evidence': ['Manually required']})
-            if name == 'javac' and 'java' not in {item['command'] for item in self.requirements}:
-                self.requirements.append({'command': 'java', 'evidence': ['Java compiler runtime']})
+            self.requirements = require_dependencies(self.requirements)
             self.report = None
             self._populate()
         self.tree.selection_set(name)
@@ -411,8 +422,7 @@ class SourcesTab(tk.Frame):
         tk.Button(document_bar, text='View build instructions', bg='#F9E79F', command=self._view_document).pack(side='left', padx=10)
         bar = tk.Frame(self, bg='#FEF5E7')
         bar.pack(fill='x', padx=12, pady=7)
-        tk.Button(bar, text='Detect build system & output', command=self.detect, bg='#F0B27A').pack(side='left', padx=3)
-        tk.Button(bar, text='Detect build dependencies', command=self.detect_requirements, bg='#A9DFBF').pack(side='left', padx=3)
+        tk.Button(bar, text='Detect build system, output && dependencies', command=self.detect, bg='#F0B27A').pack(side='left', padx=3)
         tk.Button(bar, text='Check builder tools / choose installation', command=self.open_build_tools,
                   bg='#82E0AA').pack(side='left', padx=3)
         self.compile_button = tk.Button(bar, text='Compile Source and Save Output', command=self.compile_selected, bg='#D35400', fg='white')
@@ -421,8 +431,6 @@ class SourcesTab(tk.Frame):
         self.compile_all_button.pack(side='left', padx=3)
         self.stop_button = tk.Button(bar, text='Stop Compilation', command=self.stop_compilation, bg='#922B21', fg='white', state='disabled')
         self.stop_button.pack(side='left', padx=3)
-        tk.Button(bar, text='View components in Tab 3', command=lambda: self.app.notebook.select(self.app.components_tab), bg='#F5CBA7').pack(side='left', padx=3)
-        tk.Button(bar, text='Refresh', command=self.refresh_from_project_state, bg='#F5CBA7').pack(side='left', padx=3)
         tk.Button(bar, text='Clear log', command=lambda: self.out.delete('1.0', 'end'), bg='#D6DBDF').pack(side='left', padx=3)
         timeout_bar = tk.Frame(self, bg='#FEF5E7')
         timeout_bar.pack(fill='x', padx=15)
@@ -432,15 +440,47 @@ class SourcesTab(tk.Frame):
         tk.Checkbutton(self, text='Accept a verified executable if a build fails after producing it (partial build)',
                        variable=self.accept_partial_output, command=self._set_partial_output,
                        bg='#FEF5E7').pack(anchor='w', padx=15, pady=(1, 2))
-        self.requirement_label = tk.Label(self, textvariable=self.requirement_summary, bg='#E8F8F5', fg='#1B4F72',
-                                          justify='left', anchor='w', wraplength=1750, padx=8, pady=6)
+        self.requirement_label = tk.Text(self, height=3, wrap='word', bg='#E8F8F5', fg='#1B4F72',
+                                         relief='flat', borderwidth=0, padx=8, pady=6,
+                                         font=('Segoe UI', 9), cursor='arrow', takefocus=0)
+        self.requirement_label.tag_configure('installed_status', foreground=INSTALLED_COLOR,
+                                            font=('Segoe UI', 9, 'bold'))
+        self.requirement_label.tag_configure('missing_status', foreground=MISSING_COLOR,
+                                            font=('Segoe UI', 9, 'bold'))
         self.requirement_label.pack(fill='x', padx=15, pady=(2, 4))
+        self.requirement_summary.trace_add('write', lambda *_: self._render_requirement_summary())
+        self.requirement_label.bind('<Configure>', lambda _: self._resize_requirement_summary())
+        self._render_requirement_summary()
         tk.Label(self, textvariable=self.status, bg='#FEF5E7', fg='#784212', anchor='w', font=('Segoe UI', 10, 'bold')).pack(fill='x', padx=16, pady=4)
         tk.Label(self, text='Compiles inside the builder selected in Tab 1. Successful executables are saved for runtime library checks in Tab 5 and installation during final image creation in Tab 6. The builder is not included in the final image.',
                  bg='#FEF5E7', fg='#784212', anchor='w', justify='left', wraplength=1250).pack(fill='x', padx=15, pady=4)
         self.out = tk.Text(self, font=('Consolas', 9), height=25, wrap='none')
+        self.out.tag_configure('installed_status', foreground=INSTALLED_COLOR,
+                               font=('Consolas', 9, 'bold'))
+        self.out.tag_configure('missing_status', foreground=MISSING_COLOR,
+                               font=('Consolas', 9, 'bold'))
         self.out.pack(fill='both', expand=True, padx=12, pady=(4, 12))
         self.refresh_from_project_state()
+
+    def _render_requirement_summary(self):
+        if not self.requirement_label.winfo_exists():
+            return
+        self.requirement_label.configure(state='normal')
+        self.requirement_label.delete('1.0', 'end')
+        insert_colored_status(self.requirement_label, self.requirement_summary.get())
+        self.requirement_label.configure(state='disabled')
+        self._resize_requirement_summary()
+
+    def _resize_requirement_summary(self):
+        if not self.requirement_label.winfo_exists():
+            return
+        width = max(440, self.requirement_label.winfo_width() - 20)
+        columns = max(55, width // 7)
+        lines = sum(max(1, (len(line) + columns - 1) // columns)
+                    for line in self.requirement_summary.get().splitlines())
+        height = max(1, min(7, lines))
+        if int(self.requirement_label.cget('height')) != height:
+            self.requirement_label.configure(height=height)
 
     def _set_source_network(self):
         self.app.state['allow_source_network'] = bool(self.source_network.get())
@@ -680,13 +720,13 @@ class SourcesTab(tk.Frame):
                                     command = item['command']
                                     info = report['found'].get(command)
                                     if info:
-                                        self.out.insert('end', '  ' + command + ': INSTALLED at ' +
-                                                        info.get('path', '') +
-                                                        (' | ' + info['version'] if info.get('version') else '') + '\n')
+                                        insert_colored_status(self.out, '  ' + command + ': INSTALLED at ' +
+                                                              info.get('path', '') +
+                                                              (' | ' + info['version'] if info.get('version') else '') + '\n')
                                     else:
                                         package = suggested_package(command, report)
-                                        self.out.insert('end', '  ' + command + ': MISSING from selected builder' +
-                                                        (' | suggested package: ' + package if package else '') + '\n')
+                                        insert_colored_status(self.out, '  ' + command + ': MISSING from selected builder' +
+                                                              (' | suggested package: ' + package if package else '') + '\n')
                             self.out.see('end')
         except queue.Empty:
             pass
@@ -756,7 +796,7 @@ class SourcesTab(tk.Frame):
                     response['approved'] = messagebox.askyesno('Approve builder downloads', permission_message('builder', builder, report, extra_network), parent=self)
                     signal.set()
                 else:
-                    self.out.insert('end', message)
+                    insert_colored_status(self.out, str(message))
                     self.out.see('end')
         except queue.Empty:
             pass
@@ -1041,7 +1081,7 @@ class SourcesTab(tk.Frame):
             fatal = ''
             try:
                 self._preflight(builder)
-                active_targets = [component for component in targets if not (skip_current and compilation_status(self.app.state, component)['status'] == 'COMPILED')]
+                active_targets = [component for component in targets if not (skip_current and compilation_status(self.app.state, component)['status'] in ('COMPILED', 'INSTALLED IN RUNTIME'))]
                 tool_requirements = {}
                 for component in active_targets:
                     name = str(component.get('name', '') or '')
@@ -1150,9 +1190,9 @@ class SourcesTab(tk.Frame):
                     if self._cancel_event.is_set():
                         break
                     name = str(component.get('name', '') or '').strip()
-                    if skip_current and compilation_status(self.app.state, component)['status'] == 'COMPILED':
+                    if skip_current and compilation_status(self.app.state, component)['status'] in ('COMPILED', 'INSTALLED IN RUNTIME'):
                         counts['skipped'] += 1
-                        self._log('SKIPPED (already compiled): ' + name + '\n')
+                        self._log('SKIPPED (compiled or already present in the runtime image): ' + name + '\n')
                         continue
                     try:
                         name_requirements = tool_requirements.get(name, [])

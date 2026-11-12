@@ -107,6 +107,12 @@ def installed_package_record(component, inventory):
 
 def installed_java_versions(inventory):
     result = set()
+    system = (inventory or {}).get('system') or {}
+    if isinstance(system, dict):
+        from java_runtime_checker import parse_java_version
+        detected = parse_java_version(system.get('java_version', ''))
+        if detected is not None:
+            result.add(detected)
     packages = ((inventory or {}).get('packages') or {}).get('os') or []
     for record in packages:
         if not isinstance(record, dict):

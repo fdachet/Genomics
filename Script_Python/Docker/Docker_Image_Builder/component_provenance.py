@@ -158,7 +158,8 @@ def image_identity(archive, tag):
         try:
             with tarfile.open(filename, 'r:*') as saved:
                 manifest = json.loads(_read_bytes(saved, 'manifest.json') or b'[]')
-                config_name = str(manifest[0].get('Config', '')) if manifest else ''
+                selected = next((item for item in manifest if tag and tag in (item.get('RepoTags') or [])), None) or (manifest[0] if manifest else {})
+                config_name = str(selected.get('Config', ''))
                 value = config_name.removesuffix('.json')
                 if value.startswith('blobs/sha256/'):
                     value = value.rsplit('/', 1)[-1]

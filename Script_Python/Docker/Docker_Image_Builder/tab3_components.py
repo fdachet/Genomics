@@ -8,11 +8,14 @@ import shlex
 import tkinter as tk
 from pathlib import Path
 from source_archive import archive_stem, is_source_archive
-from tkinter import filedialog, messagebox, simpledialog, ttk, scrolledtext
+from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import scrolledtext
+from workflow_toolbar import add_more_menu
 
 from binary_version_probe import probe_binary_version, inspect_jar
 from component_presets import suggested_destination, validation_presets
 from compilation_status import compilation_status
+from runtime_source_status import runtime_component_status, runtime_compiled_inventory, verified_image_components
 from component_file_types import inspect_component_file, validate_component_type
 from dependency_planner import identify_runtime_family
 from environment_editor import EnvironmentEditor
@@ -41,6 +44,7 @@ class ComponentsTab(tk.Frame):
         self.app.state.setdefault("base_inventory", {})
         self.app.state.setdefault('image_removals', [])
         self._visible_image_items = {}
+        self._duplicate_notice = None
 
         tk.Label(
             self,
@@ -74,58 +78,22 @@ class ComponentsTab(tk.Frame):
 
         toolbar = tk.Frame(self, bg="#E8F8F5")
         toolbar.pack(fill="x", padx=12, pady=10)
+        tk.Button(toolbar, text="Add a local element", bg="#48C9B0",
+                  command=lambda: self.component_dialog(None)).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Edit an element", bg="#45B39D",
+                  command=self.edit_selected).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Remove an element", bg="#138D75", fg="white",
+                  command=self.remove_selected).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Install element from internet", bg="#76D7C4",
+                  command=self.install_element_from_internet).pack(side="left", padx=4)
 
-        tk.Button(toolbar, text="Add component", bg="#48C9B0", command=lambda: self.component_dialog(None)).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Edit", bg="#45B39D", command=self.edit_selected).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Enable/Disable", bg="#16A085", fg="white", command=self.toggle_selected).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Remove", bg="#138D75", fg="white", command=self.remove_selected).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Resolve dependencies", bg="#0E6655", fg="white", command=self.resolve_dependencies).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Language runtimes / Custom setup", bg="#D4AC0D", command=lambda: EnvironmentEditor(self, self.app.state)).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Import component JSON", bg="#5DADE2", command=self.import_component_json).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Export selected JSON", bg="#3498DB", fg="white", command=self.export_selected_json).pack(side="left", padx=3)
-        tk.Button(toolbar, text="Refresh", bg="#A2D9CE", command=self.refresh).pack(side="left", padx=3)
-
-        local_install_row = tk.Frame(self, bg='#E8F8F5')
-        local_install_row.pack(fill='x', padx=14, pady=(0, 6))
-        tk.Button(local_install_row, text='Install local package into builder', bg='#F5B041',
-                  command=self.install_local_builder_packages).pack(side='left', padx=3)
-        tk.Button(local_install_row, text='Install local package into runtime base', bg='#85C1E9',
-                  command=self.install_local_runtime_packages).pack(side='left', padx=3)
-        tk.Button(local_install_row, text='Install packages online into builder', bg='#58D68D',
-                  command=lambda: RepositoryPackageInstallDialog(self, self.app, target='builder',
-                                                                 on_complete=self.refresh)).pack(side='left', padx=3)
-        tk.Button(local_install_row, text='Install packages online into runtime', bg='#76D7C4',
-                  command=lambda: RepositoryPackageInstallDialog(self, self.app, target='runtime',
-                                                                 on_complete=self.refresh)).pack(side='left', padx=3)
-        tk.Label(local_install_row, text='Local files: offline. Online: dependencies resolved automatically after approval.',
-                 bg='#E8F8F5', fg='#21618C', anchor='w').pack(side='left', padx=10)
-
-        self.show_image_components = tk.BooleanVar(value=bool(self.app.state.get('show_image_components', False)))
-        image_row = tk.Frame(self, bg='#E8F8F5')
-        image_row.pack(fill='x', padx=14, pady=(0, 5))
-        tk.Button(image_row, text='Manually confirm installed', bg='#F7DC6F', command=self.manual_installation).pack(side='right', padx=5)
-        tk.Button(image_row, text='Review removal dependencies / substitutes', bg='#D4E6F1',
-                  command=self.review_dependencies).pack(side='right', padx=5)
-        tk.Checkbutton(image_row, text='Show image components', variable=self.show_image_components,
-                       command=self.toggle_image_components, bg='#E8F8F5', fg='#0E6655',
-                       font=('Segoe UI', 10, 'bold')).pack(side='left')
-        self.inventory_category = tk.StringVar(value=str(self.app.state.get('inventory_category', 'Applications')))
-        self.inventory_origin = tk.StringVar(value=str(self.app.state.get('inventory_origin', 'All')))
-        self.show_builder_inventory = tk.BooleanVar(value=bool(self.app.state.get('show_builder_inventory', False)))
-        tk.Label(image_row, text='Inventory:', bg='#E8F8F5').pack(side='left', padx=(8, 2))
-        category_box = ttk.Combobox(image_row, textvariable=self.inventory_category, state='readonly', width=17,
-                                    values=('Applications', 'All software', 'OS packages', 'Python packages', 'R packages', 'Perl packages', 'Executables', 'All JARs', 'Language runtimes'))
-        category_box.pack(side='left', padx=2)
-        category_box.bind('<<ComboboxSelected>>', lambda e: self._inventory_settings())
-        tk.Label(image_row, text='Origin:', bg='#E8F8F5').pack(side='left', padx=(8, 2))
-        origin_box = ttk.Combobox(image_row, textvariable=self.inventory_origin, state='readonly', width=17,
-                                 values=('All', 'Added', 'Compiled using builder', 'Inherited / unknown', 'Not installed'))
-        origin_box.pack(side='left', padx=2)
-        origin_box.bind('<<ComboboxSelected>>', lambda e: self._inventory_settings())
-        tk.Checkbutton(image_row, text='Show builder-only inventory', variable=self.show_builder_inventory,
-                       command=self._inventory_settings, bg='#E8F8F5').pack(side='left', padx=6)
-        self.image_notice = tk.StringVar(value='Shows installed applications from the selected runtime image; these are not copied twice.')
-        tk.Label(image_row, textvariable=self.image_notice, bg='#E8F8F5', fg='#21618C').pack(side='left', padx=10)
+        self.final_update_notice = tk.StringVar(value="")
+        self.image_notice = tk.StringVar(value="")
+        self.show_image_components = tk.BooleanVar(value=False)
+        self.inventory_category = tk.StringVar(value='Applications')
+        self.inventory_origin = tk.StringVar(value='All')
+        self.show_builder_inventory = tk.BooleanVar(value=False)
+        self.app.state['show_image_components'] = False
 
         columns = (
             "on",
@@ -211,6 +179,7 @@ class ComponentsTab(tk.Frame):
         self.tree.tag_configure('user_confirmed', background='#FCF3CF', foreground='#7D6608')
         self.tree.tag_configure('remove_pending', background='#FADBD8', foreground='#922B21')
         self.tree.tag_configure("compiled", background="#E1F5E8")
+        self.tree.tag_configure("present", background="#D6EAF8")
         self.tree.tag_configure("outdated", background="#FFF0CF")
         self.tree.tag_configure("failed", background="#FCE3E2")
         self.tree.tag_configure("notcompiled", background="#F9F5E6")
@@ -223,8 +192,6 @@ class ComponentsTab(tk.Frame):
         messages_header.pack(fill="x", padx=12)
         tk.Label(messages_header, text="Dependency messages", bg="#E8F8F5",
                  font=("Segoe UI", 10, "bold")).pack(side="left")
-        tk.Button(messages_header, text="Clear log", bg="#D6DBDF",
-                  command=lambda: self.output.delete('1.0', 'end')).pack(side="right")
 
         self.output = tk.Text(self, height=8, bg="white", font=("Consolas", 9))
         self.output.pack(fill="x", padx=12, pady=(4, 12))
@@ -250,6 +217,28 @@ class ComponentsTab(tk.Frame):
     def install_local_runtime_packages(self):
         LocalBuilderPackageDialog(self, self.app, initial_files=self._selected_local_package_files(),
                                   on_complete=self.refresh, target='runtime')
+
+    def install_element_from_internet(self):
+        choice = messagebox.askyesnocancel(
+            'Install element from internet',
+            'Where should the requested package be installed?\n\n'
+            'YES — Complete final image (runtime)\n'
+            'NO — Temporary compilation builder only\n'
+            'CANCEL — Do not install', parent=self)
+        if choice is None:
+            return
+        target = 'runtime' if choice else 'builder'
+        RepositoryPackageInstallDialog(self, self.app, target=target, on_complete=self.refresh)
+
+    def clear_final_online_requests(self):
+        entries = self.app.state.get('final_online_package_requests') or []
+        if not entries:
+            return
+        if messagebox.askyesno('Clear complete-image package requests',
+                'Remove the scheduled online package installations from future final-image builds?\n\n'
+                'This does not delete an existing Docker image.', parent=self):
+            self.app.state['final_online_package_requests'] = []
+            self.refresh()
 
     def _blank_component(self):
         return {
@@ -304,10 +293,10 @@ class ComponentsTab(tk.Frame):
                 result["version"] = version
         if result["kind"].lower() == "binary" and result["source"] and (result["source"].lower().endswith(".jar") or (Path(result["source"]).is_file() and inspect_component_file(result["source"])["format"] == "JAVA_ARCHIVE")):
             result["kind"] = "JAR/Application"
-            if result["destination"].rstrip("/") == "/usr/local/bin":
-                result["destination"] = suggested_destination("JAR/Application", result["name"])
             if not result["version"] and Path(result["source"]).is_file():
                 result["version"] = inspect_jar(result["source"])["version"]
+        if not result["destination"]:
+            result["destination"] = suggested_destination(result["kind"], result["name"])
         return result
 
     def _touch_shared_state(self, key="components"):
@@ -567,6 +556,9 @@ class ComponentsTab(tk.Frame):
         executables = inventory.get("executables", []) if isinstance(inventory.get("executables", []), list) else []
         os_packages = packages.get("os", []) if isinstance(packages.get("os", []), list) else []
         jars = packages.get("jars", []) if isinstance(packages.get("jars", []), list) else []
+        verified_inventory = bool(inventory.get('schema') == 6 and inventory.get('inspected_at')
+                                  and isinstance(inventory.get('executables'), list)
+                                  and isinstance(packages.get('os'), list))
 
         if not tag:
             self.base_summary.set("No runtime base has been selected in Tab 1.")
@@ -575,15 +567,22 @@ class ComponentsTab(tk.Frame):
         self.base_summary.set(
             f"Tag: {tag}   |   Archive: {archive or '<not recorded>'}\n"
             f"OS: {system.get('os','')}   |   Architecture: {system.get('architecture','')}   |   "
-            f"Executables: {len(executables)}   |   OS packages: {len(os_packages)}   |   JARs: {len(jars)}"
+            f"Executables: {len(executables) if verified_inventory else 'NOT INSPECTED'}   |   "
+            f"OS packages: {len(os_packages) if verified_inventory else 'NOT INSPECTED'}   |   "
+            f"JARs: {len(jars) if verified_inventory else 'NOT INSPECTED'}"
         )
 
     def refresh_from_project_state(self):
+        self.show_image_components.set(False)
+        self.app.state['show_image_components'] = False
         self.refresh()
 
     def refresh(self):
         self.refresh_base_summary()
+        self.final_update_notice.set('')
         self.tree.delete(*self.tree.get_children())
+        if self._duplicate_notice and self._duplicate_notice.get('image') != str(self.app.state.get('base_image') or ''):
+            self._duplicate_notice = None
 
         components = self.app.state.get("components", [])
         normalized = []
@@ -599,14 +598,22 @@ class ComponentsTab(tk.Frame):
         if normalized != components:
             self.app.state["components"] = normalized
 
-        counts = {"COMPILED": 0, "NOT COMPILED": 0, "OUTDATED": 0, "FAILED": 0}
+        counts = {"COMPILED": 0, "NOT COMPILED": 0, "OUTDATED": 0, "FAILED": 0,
+                  "INSTALLED IN RUNTIME": 0, "UNVERIFIED IN RUNTIME": 0}
         for index, component in enumerate(normalized):
             compilation = compilation_status(self.app.state, component)
-            if compilation["required"] == "Yes":
+            is_source = str(component.get('kind') or '').lower() == 'source'
+            if is_source and not runtime_component_status(self.app.state, component):
                 counts[compilation["status"]] = counts.get(compilation["status"], 0) + 1
             match = self._find_base_match(component)
-            base_status = "FOUND" if match else ("UNKNOWN" if not self.app.state.get("base_inventory") else "NOT FOUND")
-            base_version = match.get("version", "") if match else ""
+            installed = runtime_component_status(self.app.state, component)
+            if installed:
+                continue
+            if is_source and installed:
+                key = "INSTALLED IN RUNTIME" if installed.get('verified') else "UNVERIFIED IN RUNTIME"
+                counts[key] += 1
+            base_status = "FOUND" if installed or match else ("UNKNOWN" if not self.app.state.get("base_inventory") else "NOT FOUND")
+            base_version = installed['version'] if installed else match.get("version", "") if match else ""
             if str(component.get('kind', '')).lower() == 'os package':
                 if match:
                     display_status = 'INSTALLED'
@@ -615,7 +622,9 @@ class ComponentsTab(tk.Frame):
                     manual_names = {str(x.get('name', '')).lower() for x in confirmations if x.get('category') == 'OS package'}
                     display_status = 'USER CONFIRMED' if component.get('name', '').lower() in manual_names else 'NOT INSTALLED'
             else:
-                display_status = compilation['status']
+                display_status = ('PRESENT IN IMAGE' if installed['verified'] else 'REPORTED — VERIFY IN TAB 2') if installed else 'COMPILED — STAGED FOR TAB 6' if compilation['status'] == 'COMPILED' else compilation['status']
+            display_kind = ('Binary (Built from Source)' if str(component.get('kind', '')).lower() == 'source' and (installed and installed['verified'] or compilation['status'] == 'COMPILED')
+                            else component['kind'])
             self.tree.insert(
                 "",
                 "end",
@@ -624,10 +633,10 @@ class ComponentsTab(tk.Frame):
                     "YES" if component["enabled"] else "NO",
                     component["name"],
                     component["version"],
-                    component["kind"],
+                    display_kind,
                     compilation["required"],
                     display_status,
-                    compilation["version"],
+                    compilation["version"] or (component["version"] if compilation["status"] == "COMPILED" else ""),
                     component["source"],
                     component["destination"],
                     component["depends"],
@@ -635,23 +644,26 @@ class ComponentsTab(tk.Frame):
                     component["runtime_packages"],
                     base_status,
                     base_version,
-                    "PROJECT", "", "NEW COMPONENT",
+                    'INHERITED' if installed and installed['verified'] else 'PROJECT', '',
+                    'PRESENT IN IMAGE' if installed and installed['verified'] else 'VERIFY IN TAB 2' if installed else 'NEW COMPONENT',
                 ),
-                tags=({"COMPILED": "compiled", "OUTDATED": "outdated", "FAILED": "failed", "NOT COMPILED": "notcompiled"}.get(compilation["status"], ""),),
+                tags=('present' if installed and installed['verified'] else {"COMPILED": "compiled", "OUTDATED": "outdated", "FAILED": "failed", "NOT COMPILED": "notcompiled"}.get(compilation["status"], ""),),
             )
 
-        if self.show_image_components.get():
-            try:
-                archive = str(self.app.state.get('runtime_base_archive') or '')
-                snapshot = inspect_image_components(archive) if archive else {}
-                self._show_inventory(snapshot, normalized)
-            except Exception as exc:
-                self.image_notice.set('Runtime inventory could not be read: ' + str(exc))
-        else:
-            self.image_notice.set('Enable image inventory to see installed software and unmet installation requests.')
+        self.image_notice.set('Installed components are listed in Tab 2; this tab contains pending additions only.')
+        if self._duplicate_notice:
+            duplicate = self._duplicate_notice
+            self.tree.insert('', 'end', iid='already-present', values=(
+                'YES', duplicate.get('name', ''), duplicate.get('version', ''),
+                duplicate.get('kind', 'Binary'), 'No', 'ALREADY PRESENT', '',
+                duplicate.get('path', ''), duplicate.get('path', ''), '', '', '',
+                'PRESENT IN RUNTIME', '', 'INSTALLED', '', 'RUNTIME IMAGE',
+            ), tags=('present',))
 
         self.compilation_summary.set(
-            "Sources: " + str(sum(counts.values())) + "    |    Compiled: " + str(counts["COMPILED"]) +
+            "Pending sources: " + str(sum(str(x.get("kind") or "").lower() == "source" and not runtime_component_status(self.app.state, x) for x in normalized)) + "    |    Present in runtime: " + str(counts["INSTALLED IN RUNTIME"]) +
+            "    |    Need verification: " + str(counts["UNVERIFIED IN RUNTIME"]) +
+            "    |    Compiled: " + str(counts["COMPILED"]) +
             "    |    Not compiled: " + str(counts["NOT COMPILED"]) +
             "    |    Outdated: " + str(counts["OUTDATED"]) +
             "    |    Failed: " + str(counts["FAILED"])
@@ -668,15 +680,16 @@ class ComponentsTab(tk.Frame):
         return sorted(set(indices))
 
     def edit_selected(self):
+        if 'already-present' in self.tree.selection():
+            messagebox.showinfo('ALREADY PRESENT',
+                                'This binary is installed in the runtime. View it in Tab 2.', parent=self)
+            return
         indices = self._selected_indices()
         if not indices:
             messagebox.showwarning("Component", "Select one component to edit.")
             return
         if len(indices) > 1:
             messagebox.showwarning("Component", "Edit supports one component at a time.")
-            return
-        if not indices:
-            messagebox.showinfo('Present in image', 'This application is already inside the selected image. Its entry is read-only. Add a new component to update it.')
             return
         self.component_dialog(indices[0])
 
@@ -728,10 +741,14 @@ class ComponentsTab(tk.Frame):
         return None
 
     def remove_selected(self):
+        if 'already-present' in self.tree.selection():
+            messagebox.showinfo('ALREADY PRESENT',
+                                'The binary is part of the existing image. Tab 3 does not remove it from the original image.', parent=self)
+            return
         indices = self._selected_indices()
         selections = [self._visible_image_items[x] for x in self.tree.selection() if x in self._visible_image_items]
         if not indices and not selections:
-            messagebox.showwarning('Remove', 'Select a registered component or a component from the opened image.', parent=self)
+            messagebox.showwarning('Remove', 'Select a pending element to remove. Installed image contents are listed in Tab 2.', parent=self)
             return
         current = normalize_removals(self.app.state.get('image_removals', []))
         planned = []
@@ -897,8 +914,6 @@ class ComponentsTab(tk.Frame):
 
         if str(existing.get("source", "")).lower().endswith(".jar") and str(existing.get("kind", "")).lower() == "binary":
             existing["kind"] = "JAR/Application"
-            if existing.get("destination", "").rstrip("/") == "/usr/local/bin":
-                existing["destination"] = suggested_destination("JAR/Application", existing.get("name", ""))
         fields = {key: tk.StringVar(value=str(existing.get(key, "") or "")) for key in (
             "name", "version", "source", "destination", "depends",
             "runtime_packages", "validation",
@@ -1073,7 +1088,7 @@ class ComponentsTab(tk.Frame):
             tk.Button(parent, text="Folder", command=lambda: self._browse_folder(fields["source"])).pack(side="left", padx=2)
 
         source_row, _ = row_entry(form, "Local source / file / folder:", "source", extra=browse_source)
-        destination_presets = ("/usr/local/bin/", "/usr/local/sbin/", "/usr/local/lib/", "/opt/", "/usr/local/share/", "/etc/")
+        destination_presets = ()
         destination_row, destination_combo = row_entry(
             form, "Destination in Docker image:", "destination", widget="combo", presets=destination_presets
         )
@@ -1385,9 +1400,56 @@ class ComponentsTab(tk.Frame):
                     messagebox.showerror("Component", f"Component '{component['name']}' already exists.", parent=win)
                     return
             if index is None:
+                from runtime_source_status import expected_runtime_path
+                candidate_path = expected_runtime_path(self.app.state, component)
+                for existing_component in self.app.state['components']:
+                    current_path = expected_runtime_path(self.app.state, existing_component)
+                    same_name = str(existing_component.get('name', '')).casefold() == component['name'].casefold()
+                    same_target = bool(candidate_path and current_path and candidate_path == current_path)
+                    if same_name or same_target:
+                        messagebox.showinfo('ALREADY PRESENT',
+                            component['name'] + ' is already registered as a pending addition. '
+                            'It will not be added a second time.', parent=win)
+                        return
+                installed = runtime_component_status(self.app.state, component)
+                if not installed and candidate_path:
+                    inventory = self.app.state.get('base_inventory') or {}
+                    paths = [str(item.get('path') or '') for item in inventory.get('executables') or []
+                             if isinstance(item, dict)]
+                    jars = ((inventory.get('packages') or {}).get('jars') or [])
+                    paths.extend(str(item.get('path') if isinstance(item, dict) else item) for item in jars)
+                    if candidate_path in paths:
+                        installed = {'path': candidate_path, 'verified': bool(inventory.get('inspected_at'))}
+                if not installed:
+                    inventory = self.app.state.get('base_inventory') or {}
+                    if inventory.get('inspected_at') and str(component.get('kind') or '').lower() in ('binary', 'source', 'script'):
+                        from pathlib import PurePosixPath
+                        names = {str(component.get('name') or '').casefold(),
+                                 PurePosixPath(str(component.get('source') or '').replace('\\', '/')).name.casefold()}
+                        for item in inventory.get('executables') or []:
+                            if not isinstance(item, dict):
+                                continue
+                            path = str(item.get('path') or '')
+                            if str(item.get('name') or '').casefold() in names or PurePosixPath(path).name.casefold() in names:
+                                installed = {'path': path, 'verified': True}
+                                break
+                if installed:
+                    self._duplicate_notice = {
+                        'name': component['name'], 'version': component.get('version', ''),
+                        'kind': component['kind'], 'path': str(installed.get('path') or candidate_path),
+                        'image': str(self.app.state.get('base_image') or ''),
+                    }
+                    win.destroy()
+                    self.refresh()
+                    messagebox.showinfo('ALREADY PRESENT',
+                        component['name'] + ' is already present in the selected runtime at '
+                        + str(installed.get('path') or candidate_path) + '.\n\n'
+                        'It appears once as ALREADY PRESENT. No duplicate was added to the project.', parent=self)
+                    return
                 self.app.state["components"].append(component)
             else:
                 self.app.state["components"][index] = component
+            self._duplicate_notice = None
             win.destroy()
             self.refresh()
             if open_build_tab and component["kind"].strip().lower() == "source":

@@ -18,7 +18,8 @@ def optional_command(command, label, network_sensitive=False):
     text = re.sub(r'\\[ \t]*\n[ \t]*', ' ', text).replace('\n', ' ')
     shell = 'mkdir -p /opt/component-builder; '
     if network_sensitive:
-        shell += 'if [ "$COMPONENT_BUILDER_ALLOW_DOWNLOADS" != 1 ]; then printf "%s\\n" ' + shlex.quote(str(label or 'dependency step') + ' — skipped (downloads not authorized)') + '; '
+        skipped = shlex.quote(str(label or 'dependency step') + ' — skipped (downloads not authorized)')
+        shell += 'if [ "$COMPONENT_BUILDER_ALLOW_DOWNLOADS" != 1 ]; then printf "%s\\n" ' + skipped + ' >> /opt/component-builder/setup-issues.txt; printf "%s\\n" ' + skipped + '; '
         shell += 'else ( ' + text + ' ) || { printf "%s\\n" ' + shlex.quote(str(label or 'dependency step') + ' — failed') + ' >> /opt/component-builder/setup-issues.txt; }; fi'
     else:
         shell += '( ' + text + ' ) || { printf "%s\\n" ' + shlex.quote(str(label or 'dependency step') + ' — failed') + ' >> /opt/component-builder/setup-issues.txt; }'

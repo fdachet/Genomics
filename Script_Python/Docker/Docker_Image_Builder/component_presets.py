@@ -1,11 +1,13 @@
 
 from pathlib import Path
+import fnmatch
 import ntpath
 import posixpath
 import re
 import shlex
 from component_output_detector import _makefile_target_candidates, build_target_names
 from source_archive import SourceArchive, is_source_archive
+from recognized_elements import load_database
 
 BUILD_COMMANDS = {
     "Make": "make",
@@ -31,20 +33,6 @@ COMMON_BUILD_COMMANDS = (
     "gradle build", "python -m pip wheel . -w dist", "R CMD build .",
 )
 
-DETECTORS = (
-    ("gradlew", "Gradle"), ("mvnw", "Maven"),
-    ("CMakeLists.txt", "CMake"),
-    ("pom.xml", "Maven"), ("build.gradle", "Gradle"),
-    ("build.gradle.kts", "Gradle"), ("Cargo.toml", "Cargo"),
-    ("go.mod", "Go"), ("Makefile", "Make"),
-    ("makefile", "Make"), ("GNUmakefile", "Make"),
-    ("configure", "Configure/Make"), ("configure.ac", "Autotools"),
-    ("meson.build", "Meson"),
-    ("pyproject.toml", "Python"), ("setup.py", "Python"),
-    ("DESCRIPTION", "R package"), ("build.ninja", "Ninja"),
-)
-
-
 def preferred_make_target(directory, component_name='', source_folder=''):
     targets, _ = _makefile_target_candidates(Path(directory))
     names = build_target_names(component_name, source_folder or directory)
@@ -59,26 +47,32 @@ def detect_build_system(path, component_name=''):
     archive = SourceArchive(directory) if directory.is_file() and is_source_archive(directory) else None
     if not directory.is_dir() and archive is None:
         return "", ""
+    detectors = sorted((item for item in load_database()
+                        if item['enabled'] and item['build_system'] and
+                        (item['build_command'] or item['build_system'] in BUILD_COMMANDS) and
+                        item['kind'] in ('build_file', 'executable')),
+                       key=lambda item: (item['priority'], item['name'].lower()))
     for relative in ('', 'source', 'src'):
         work = directory / relative if relative else directory
         if archive is None and not work.is_dir():
             continue
-        for marker, system in DETECTORS:
-            entry_name = f'{relative}/{marker}' if relative else marker
-            if not (archive.has(entry_name) if archive is not None else (work / marker).is_file()):
+        candidates = ([name.rsplit('/', 1)[-1] for name in archive.file_names
+                       if ('/' in name and name.rsplit('/', 1)[0] == relative) or
+                       ('/' not in name and not relative)] if archive is not None else
+                      [entry.name for entry in work.iterdir() if entry.is_file()])
+        for item in detectors:
+            pattern = (item['pattern'] or item['name']).lower()
+            if not any(fnmatch.fnmatchcase(filename.lower(), pattern) for filename in candidates):
                 continue
-            command = BUILD_COMMANDS[system]
-            if marker == 'gradlew':
-                command = './gradlew build'
-            elif marker == 'mvnw':
-                command = './mvnw package'
-            elif system == 'Make':
+            system = item['build_system']
+            command = item['build_command'] or BUILD_COMMANDS.get(system, '')
+            if system == 'Make' and command == 'make':
                 target = preferred_make_target(work, component_name, directory) if archive is None else ''
                 command = 'make' + (f' -C {shlex.quote(relative)}' if relative else '')
                 if target:
                     command += ' ' + shlex.quote(target)
                 return system, command
-            elif system == 'CMake' and relative:
+            if system == 'CMake' and relative and command == BUILD_COMMANDS['CMake']:
                 return system, f'cmake -S {shlex.quote(relative)} -B build && cmake --build build -j 4'
             if relative:
                 command = f'cd {shlex.quote(relative)} && {command}'
@@ -87,12 +81,12 @@ def detect_build_system(path, component_name=''):
 
 
 def suggested_destination(kind, name):
-    kind = str(kind or "").lower().strip()
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(name or "component")).strip("_") or "component"
-    if kind in ("source", "binary"):
+    category = str(kind or "").strip().lower()
+    if category in ("source", "binary", "script"):
         return "/usr/local/bin/"
-    if kind in ("jar/application", "folder", "other", "script"):
-        return f"/opt/{safe}/"
+    if category in ("jar/application", "folder", "other"):
+        label = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(name or "").strip()).strip(".-") or "component"
+        return "/opt/" + label + "/"
     return ""
 
 

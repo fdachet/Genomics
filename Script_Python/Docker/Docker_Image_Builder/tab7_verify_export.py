@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 from validation_discovery import CHECK_TYPES, DockerValidator, installed_target
 from image_component_inventory import inspect_image_components
 from manual_installation_overrides import ManualOverrideDialog, records_for_image
+from workflow_toolbar import add_more_menu
 
 
 class ValidationTab(tk.Frame):
@@ -44,17 +45,17 @@ class ValidationTab(tk.Frame):
         self.stop_button = tk.Button(toolbar, text='Stop', bg='#D35400', fg='white', command=self.stop, state='disabled')
         self.stop_button.pack(side='left', padx=3)
         tk.Button(toolbar, text='Edit selected test', bg='#5DADE2', command=self.edit_selected).pack(side='left', padx=3)
-        tk.Button(toolbar, text='Use automatic', bg='#AED6F1', command=self.reset_selected).pack(side='left', padx=3)
-        tk.Button(toolbar, text='Refresh', command=self.refresh_from_project_state).pack(side='left', padx=3)
         extra = tk.Frame(self, bg='#EBF5FB')
         extra.pack(fill='x', padx=12, pady=3)
-        tk.Button(extra, text='Add project test', bg='#5DADE2', command=self.add_project_test).pack(side='left', padx=3)
-        tk.Button(extra, text='Remove selected project test', bg='#AED6F1', command=self.remove_project_test).pack(side='left', padx=3)
-        tk.Button(extra, text='Export image .tar (partial OK)', bg='#1B4F72', fg='white', command=self.export_image).pack(side='left', padx=3)
-        tk.Button(extra, text='Use existing local image', bg='#A9DFBF', command=self.use_existing_image).pack(side='left', padx=3)
         tk.Button(extra, text='Save report', bg='#21618C', fg='white', command=self.save_report).pack(side='left', padx=3)
-        tk.Button(extra, text='Revise Built Image', bg='#A9DFBF', command=self.revise_image).pack(side='left', padx=3)
-        tk.Button(extra, text='Manual confirmations', bg='#F7DC6F', command=self.manual_installation).pack(side='left', padx=3)
+        add_more_menu(extra, [
+            ("Restore automatic test for selected component", self.reset_selected),
+            ("Add a custom project test", self.add_project_test),
+            ("Remove selected custom test", self.remove_project_test),
+            ("Use an existing local image", self.use_existing_image),
+            ("Manual installation confirmations", self.manual_installation),
+            ("Refresh verification", self.refresh_from_project_state),
+        ], "#EBF5FB")
         tk.Label(self, textvariable=self.summary, bg='#D6EAF8', fg='#154360', anchor='w', padx=9,
                  pady=7, justify='left', wraplength=1300).pack(fill='x', padx=12, pady=(5, 6))
         frame = tk.Frame(self)

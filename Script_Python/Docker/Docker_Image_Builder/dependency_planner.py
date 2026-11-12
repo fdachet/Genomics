@@ -60,12 +60,7 @@ def runtime_distribution(state):
 
 
 def preferred_java_version(minimum, family, state):
-    version = int(minimum)
-    distro = runtime_distribution(state)
-    rhel_ten = bool(re.search(r'(?:red hat enterprise linux|rhel|ubi|rocky linux|almalinux|alma linux)[^0-9]{0,12}10(?:\D|$)', distro))
-    if family == 'rpm' and rhel_ten and version <= 21:
-        return 21, 'RHEL/UBI 10 uses OpenJDK 21 as its default Java implementation; repository availability remains unverified'
-    return version, 'Minimum Java version inferred from JAR bytecode; repository availability remains unverified'
+    return int(minimum), 'Minimum Java version inferred from JAR bytecode; choose and verify an available runtime for the selected distribution'
 
 
 def java_package_version(name):
@@ -83,20 +78,10 @@ def java_package_version(name):
 
 
 def java_package(version, family):
-    version = int(version)
-    if family == 'apt':
-        return f'openjdk-{version}-jre-headless'
-    if family == 'rpm':
-        return f'java-{version}-openjdk-headless'
-    if family == 'apk':
-        return f'openjdk{version}-jre'
     return None
 
 
 def translate_package(name, family):
-    major = java_package_version(name)
-    if major is not None and family in ('apt', 'rpm', 'apk'):
-        return java_package(major, family)
     return name
 
 
@@ -135,10 +120,10 @@ def plan_runtime_dependencies(state, base_java=None, manager=None):
     errors = [entry['name'] + ': ' + entry['error'] for entry in java if entry['error']]
     if minimum is not None and requested_java is not None and requested_java < minimum:
         errors.append('Selected Java ' + str(requested_java) + ' is below the detected Java ' + str(minimum) + '+ requirement. No additional package will be selected automatically.')
-    if requested_java is not None and configured_java and family in ('apt', 'rpm', 'apk'):
-        configured_package = java_package(requested_java, family)
-        mapped = validate_packages([*mapped, configured_package])
-        selection_reason = 'Explicit Java runtime version configured in Language runtimes / Custom setup'
+    if requested_java is not None and configured_java:
+        selection_reason = 'Java version requested in Language runtimes / Custom setup; select its OS package explicitly in Tab 3'
+        if not explicit and (base_java is None or base_java < requested_java):
+            errors.append('Java ' + str(requested_java) + '+ was requested, but no runtime OS package was selected. Search the selected distribution repository and choose a compatible package.')
     if minimum is not None and (base_java is None or base_java < minimum) and (requested_java is None or requested_java < minimum):
         errors.append('Java ' + str(minimum) + '+ required by application bytecode. No compatible Java runtime was selected by the user. Add one manually in Tab 3 if desired.')
     auto_version = java_package_version(auto_package) if auto_package else None
@@ -157,7 +142,7 @@ def evaluate_java_requirement(minimum, base_version, plan, verification_error=''
     if base_version is not None and base_version >= minimum and (target is None or target <= base_version):
         return {'status': 'FOUND', 'path': f'Java {base_version} verified in the original runtime image'}
     if target is not None and target >= minimum:
-        package = java_package(target, plan.get('manager')) or 'a user-selected Java ' + str(target) + ' runtime'
+        package = 'a user-selected Java ' + str(target) + ' runtime'
         if plan.get('install_now'):
             path = f'Java {minimum}+ is NOT VERIFIED in the base. User-selected {package} is scheduled for installation; only a successful final-image check can establish compatibility'
         else:
