@@ -371,7 +371,7 @@ class BuilderBaseTab(tk.Frame):
                 inventory = {'image_id': ident, 'system': system}
                 result = save_image_checkpoint(tag, destination, system=system, inventory=inventory,
                                                progress=self._progress)
-                self.after(0, lambda: self._complete(tag, result['archive'], system, inventory, spec))
+                self.after(0, lambda: self._complete(tag, result['archive'], result.get('system', system), result.get('inventory', inventory), spec))
             except Exception as exc:
                 self.after(0, lambda msg=str(exc): self._failed(msg))
         threading.Thread(target=worker, daemon=True).start()

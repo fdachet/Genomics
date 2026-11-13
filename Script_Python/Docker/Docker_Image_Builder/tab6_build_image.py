@@ -1122,7 +1122,7 @@ class BuildTab(tk.Frame):
                         try:
                             log('Saving the COMPLETE built Docker image as TAR: ' + selected_archive + '\n')
                             saved = save_full_image_to_tar(
-                                image, selected_archive, progress=log, overwrite=replace_archive)
+                                image, selected_archive, progress=log, overwrite=replace_archive, provenance=provenance)
                             report_archive = saved['archive']
                             pending['complete_image_archive'] = report_archive
                             self._messages.put(('full_tar_saved', image, report_archive))

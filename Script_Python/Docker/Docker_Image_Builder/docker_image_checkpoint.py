@@ -1,12 +1,16 @@
 import json
 import os
+import subprocess
+import tempfile
 import tarfile
 import time
 import uuid
 from copy import deepcopy
+from functools import lru_cache
 from pathlib import Path
 
 from package_repository_finder import _run
+from embedded_image_metadata import read_embedded_image_metadata, FORMAT
 
 
 def archive_image_tags(path):
@@ -55,67 +59,137 @@ def checkpoint_sidecar_path(path):
     return Path(path).with_suffix(".json")
 
 
+@lru_cache(maxsize=32)
+def _read_embedded_cached(path, size, mtime_ns):
+    return read_embedded_image_metadata(path)
+
+
 def read_checkpoint_metadata(path):
+    try:
+        stat = Path(path).stat()
+        embedded = _read_embedded_cached(str(Path(path).resolve()), stat.st_size, stat.st_mtime_ns)
+        if embedded:
+            return deepcopy(embedded)
+    except (tarfile.TarError, OSError, KeyError, ValueError, TypeError):
+        pass
     sidecar = checkpoint_sidecar_path(path)
     if not sidecar.is_file():
         return {}
     try:
-        data = json.loads(sidecar.read_text(encoding="utf-8-sig"))
+        data = json.loads(sidecar.read_text(encoding='utf-8-sig'))
     except (ValueError, OSError, UnicodeError):
         return {}
     return data if isinstance(data, dict) else {}
 
 
+def _image_id(image, cancel=None):
+    return _run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], timeout=60, cancel=cancel).strip()
+
+
+def _embed_inventory_in_image(image, inventory=None, provenance=None, progress=None, cancel=None):
+    from image_filesystem_inventory import inspect_tag_via_export
+    image_id_before = _image_id(image, cancel)
+    ready = (isinstance(inventory, dict) and inventory.get('schema') == 6
+             and inventory.get('image_id') == image_id_before
+             and isinstance(inventory.get('executables'), list)
+             and isinstance(inventory.get('packages'), dict))
+    if ready:
+        snapshot = deepcopy(inventory)
+        if progress:
+            progress('Using matching installed-software inventory from this image.\n')
+    else:
+        if progress:
+            progress('Inspecting installed software before embedding image inventory.\n')
+        snapshot = inspect_tag_via_export(
+            image,
+            report=(lambda kind, value: progress('Inventory: ' + str(value) + '\n')
+                    if progress and kind == 'stage' else None),
+            cancel=cancel,
+            timeout=600,
+        )
+    parent_provenance = snapshot.get('provenance')
+    if not isinstance(provenance, dict):
+        provenance = parent_provenance if isinstance(parent_provenance, dict) else None
+    if provenance is None:
+        provenance = {
+            'provenance_status': 'NOT_AVAILABLE',
+            'source_image': image,
+            'source_image_id': image_id_before,
+            'components': [],
+            'note': 'No component-builder provenance was present in the source image; past installations cannot be reconstructed from this record.',
+        }
+    snapshot['provenance'] = provenance
+    snapshot.pop('image_id', None)
+    snapshot.pop('rootfs_diff_ids', None)
+    snapshot.pop('archive_tag', None)
+    snapshot['docker_tag'] = image
+    version_probes = {}
+    for item in snapshot.get('executables') or []:
+        if not isinstance(item, dict) or not item.get('version') or not item.get('path'):
+            continue
+        if item.get('version_source') in ('saved', 'runtime', 'package'):
+            version_probes[item['path']] = {
+                key: item.get(key, '') for key in ('name', 'version', 'version_source', 'package', 'package_version')
+            }
+    payload = {
+        'format': FORMAT,
+        'inspection': snapshot,
+        'version_probes': version_probes,
+    }
+    with tempfile.TemporaryDirectory(prefix='component-builder-embedded-') as temp:
+        folder = Path(temp)
+        (folder / 'image_inventory.json').write_text(json.dumps(payload, indent=2), encoding='utf-8')
+        dockerfile = ['FROM ' + image, 'COPY ["image_inventory.json", "/opt/component-builder/image_inventory.json"]']
+        (folder / 'component_provenance.json').write_text(json.dumps(provenance, indent=2), encoding='utf-8')
+        dockerfile.append('COPY ["component_provenance.json", "/opt/component-builder/component_provenance.json"]')
+        (folder / 'Dockerfile').write_text('\n'.join(dockerfile) + '\n', encoding='utf-8')
+        if progress:
+            progress('Embedding inventory and provenance in an actual Docker image filesystem layer.\n')
+        _run(['docker', 'build', '--pull=false', '--network=none', '--progress=plain', '-t', image, str(folder)],
+             timeout=1800, idle_timeout=0, cancel=cancel, progress=progress)
+    image_id_after = _image_id(image, cancel)
+    if image_id_after == image_id_before:
+        raise RuntimeError('Embedded metadata build did not create a new image configuration.')
+    if progress:
+        progress('Metadata embedded in Docker image; original and new image IDs are different as expected.\n')
+    snapshot['image_id'] = image_id_after
+    snapshot['inventory_method'] = 'embedded_image'
+    return {'image_id': image_id_after, 'inspection': snapshot, 'embedded': True}
+
+
 def save_image_checkpoint(image, destination, system=None, inventory=None, cancel=None, progress=None):
-    image = str(image or "").strip()
+    image = str(image or '').strip()
     destination = Path(destination)
     if not image:
-        raise ValueError("No Docker image is selected. Select or inspect the image in Tab 1/2 first.")
-    if destination.suffix.lower() != ".tar":
-        raise ValueError("Select a .tar file for the saved Docker image.")
-    if not destination.parent.is_dir():
-        raise ValueError("The selected destination folder does not exist.")
-    sidecar = checkpoint_sidecar_path(destination)
-    if sidecar.exists():
-        existing = read_checkpoint_metadata(destination)
-        if not existing.get("docker_tag") or not isinstance(existing.get("inspection"), dict):
-            raise ValueError(f"An unrelated JSON file already uses the checkpoint metadata path: {sidecar}. Choose a different TAR filename.")
-    _run(["docker", "image", "inspect", "--format", "{{.Id}}", image], timeout=60, cancel=cancel)
-    temporary = destination.with_name(destination.name + ".pending-" + uuid.uuid4().hex)
-    temporary_sidecar = sidecar.with_name(sidecar.name + ".pending-" + uuid.uuid4().hex)
+        raise ValueError('No Docker image is selected for the checkpoint.')
+    if destination.suffix.lower() != '.tar' or not destination.parent.is_dir():
+        raise ValueError('Choose a .tar filename inside an existing directory.')
+    _image_id(image, cancel)
+    temporary = destination.with_name(destination.name + '.pending-' + uuid.uuid4().hex)
     try:
-        if progress:
-            progress("Saving the existing Docker image without rebuilding it. Large images may take several minutes.\n")
-        _run(["docker", "save", "-o", str(temporary), image], timeout=14400, idle_timeout=0, cancel=cancel)
+        prepared = _embed_inventory_in_image(image, inventory=inventory, progress=progress, cancel=cancel)
+        _run(['docker', 'save', '-o', str(temporary), image], timeout=14400,
+             idle_timeout=0, cancel=cancel, progress=progress)
         if not temporary.is_file() or not temporary.stat().st_size:
-            raise RuntimeError("Docker reported success but did not create a nonempty TAR archive.")
+            raise RuntimeError('Docker did not create a nonempty saved image TAR.')
         tags = archive_image_tags(temporary)
         if not archive_has_image_tag(tags, image):
-            raise RuntimeError("Image TAR validation failed. Requested: " + canonical_image_tag(image) + "; available: " + (", ".join(tags) or "none"))
-        details = deepcopy(inventory) if isinstance(inventory, dict) else {}
-        selected_system = deepcopy(system) if isinstance(system, dict) else {}
-        if selected_system:
-            details["system"] = selected_system
-        metadata = {
-            "docker_tag": image,
-            "inspection": details,
-            "checkpoint_format": "component-image-builder-1",
-        }
-        temporary_sidecar.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+            raise RuntimeError('Saved image TAR does not contain the requested Docker tag.')
+        embedded = read_embedded_image_metadata(temporary, preferred_tag=image)
+        if not embedded:
+            raise RuntimeError('Saved image TAR is missing its embedded inspection metadata.')
         os.replace(temporary, destination)
-        os.replace(temporary_sidecar, sidecar)
         if progress:
-            progress(f"Saved {destination.stat().st_size / 1000000:.1f} MB Docker TAR: {destination}\n")
-            progress(f"Saved image inventory metadata: {sidecar}\n")
-        return {"archive": str(destination), "tag": image, "metadata": metadata, "tags": tags}
+            progress(f'Saved self-contained image TAR: {destination} ({destination.stat().st_size / 1000000:.1f} MB)\n')
+        return {'archive': str(destination), 'tag': image, 'metadata': embedded,
+                'tags': tags, 'system': embedded['inspection'].get('system', {}),
+                'inventory': embedded['inspection'], 'image_id': prepared['image_id']}
     finally:
         if temporary.exists():
             temporary.unlink()
-        if temporary_sidecar.exists():
-            temporary_sidecar.unlink()
 
 
-def save_full_image_to_tar(image, destination, cancel=None, progress=None, overwrite=False):
+def save_full_image_to_tar(image, destination, cancel=None, progress=None, overwrite=False, inventory=None, provenance=None):
     image = str(image or '').strip()
     destination = Path(destination)
     if not image:
@@ -124,23 +198,28 @@ def save_full_image_to_tar(image, destination, cancel=None, progress=None, overw
         raise ValueError('Choose a .tar filename inside an existing directory.')
     if destination.exists() and not overwrite:
         raise FileExistsError('This TAR already exists. Choose a new filename or approve replacement: ' + str(destination))
-    _run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image], timeout=60, cancel=cancel)
+    _image_id(image, cancel)
     temporary = destination.with_name(destination.name + '.pending-' + uuid.uuid4().hex)
     try:
+        prepared = _embed_inventory_in_image(image, inventory=inventory, provenance=provenance,
+                                             progress=progress, cancel=cancel)
         if progress:
-            progress('Exporting FULL Docker image ' + image + ' to TAR. Large images may take several minutes.\n')
+            progress('Exporting self-contained Docker image ' + image + ' to TAR.\n')
         _run(['docker', 'save', '-o', str(temporary), image], timeout=14400, idle_timeout=0, cancel=cancel)
         if not temporary.is_file() or temporary.stat().st_size == 0:
             raise RuntimeError('Docker did not create a nonempty complete-image TAR.')
         tags = archive_image_tags(temporary)
         if not archive_has_image_tag(tags, image):
             raise RuntimeError('Final TAR validation failed. Requested: ' + canonical_image_tag(image) + '; available: ' + (', '.join(tags) or 'none'))
+        embedded = read_embedded_image_metadata(temporary, preferred_tag=image)
+        if not embedded:
+            raise RuntimeError('Image TAR did not retain its embedded inventory and provenance layer.')
         if destination.exists() and not overwrite:
             raise FileExistsError('The complete-image TAR filename was created by another process: ' + str(destination))
         os.replace(temporary, destination)
         if progress:
             progress('COMPLETE IMAGE TAR: ' + str(destination) + ' (' + f'{destination.stat().st_size / 1000000:.1f}' + ' MB)\n')
-        return {'archive': str(destination), 'tag': image}
+        return {'archive': str(destination), 'tag': image, 'image_id': prepared['image_id'], 'metadata': embedded, 'inventory': embedded['inspection']}
     finally:
         if temporary.exists():
             temporary.unlink()

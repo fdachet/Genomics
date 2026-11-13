@@ -20,7 +20,7 @@ from docker_image_checkpoint import save_full_image_to_tar
 from workflow_toolbar import add_more_menu
 from image_filesystem_inventory import inspect_saved_tar, inspect_tag_via_export, InspectionCancelled, InspectionTimeout
 from component_provenance import image_identity
-from docker_image_checkpoint import docker_image_matches_tar
+from docker_image_checkpoint import docker_image_matches_tar, read_checkpoint_metadata
 
 
 class BaseTab(tk.Frame):
@@ -585,21 +585,10 @@ class BaseTab(tk.Frame):
     def _read_sidecar(self, archive_path):
         if not archive_path:
             return {}
-        p = self._sidecar_path(archive_path)
-        if not p.exists():
-            return {}
         try:
-            data = json.loads(p.read_text(encoding="utf-8-sig"))
-            return data if isinstance(data, dict) else {}
-        except Exception:
+            return read_checkpoint_metadata(archive_path)
+        except (OSError, ValueError, tarfile.TarError):
             return {}
-
-    def _write_sidecar(self, archive_path, updates):
-        p = self._sidecar_path(archive_path)
-        data = self._read_sidecar(archive_path)
-        data.update(updates)
-        p.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        return data
 
     def _persistent_version_probes(self, metadata):
         probes = metadata.get("version_probes")
@@ -1071,15 +1060,10 @@ fi
                     }
                 metadata_now["version_probes"] = probes
                 self._apply_persistent_versions(metadata_now, inspection)
-                if not rec.get("tag_only"):
-                    try:
-                        self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
-                    except Exception as e:
-                        self._log(f"WARNING: could not save probed versions: {e}\n")
 
                 rec["metadata"] = metadata_now
                 self._show_record_inventory(rec)
-                self._log(("Version probes saved in project state (save the project JSON to keep them).\n" if rec.get("tag_only") else f"Saved version probes permanently in: {self._sidecar_path(rec['path'])}\n"))
+                self._log('Version probes kept in project state; save the project JSON or export a new embedded-metadata TAR to persist them.\n')
                 summary = (
                     f"Selected executables: {count}\n"
                     f"Runtime versions detected: {detected}\n"
@@ -1280,13 +1264,18 @@ done
                 'Replace this TAR with the selected Docker image after verifying the export?\n\n'
                 + str(chosen), parent=self):
             return
+        source_inventory = (rec.get('metadata') or {}).get('inspection')
+        if not isinstance(source_inventory, dict):
+            source_inventory = None
+        role = self._active_role
         self._image_export_busy = True
         self.image_save_button.configure(state='disabled')
         self._log(f'Saving complete Docker image {image} to {chosen}\n')
 
         def worker():
             try:
-                result = save_full_image_to_tar(image, chosen, overwrite=overwrite)
+                result = save_full_image_to_tar(image, chosen, overwrite=overwrite,
+                                                inventory=source_inventory)
                 error = ''
             except Exception as exc:
                 result = None
@@ -1300,8 +1289,19 @@ done
                 else:
                     self._log('COMPLETE Docker TAR saved: ' + result['archive'] + '\n')
                     self.app.state['last_saved_full_tar'] = result['archive']
+                    inspection = result.get('inventory') or {}
+                    system = inspection.get('system') or {}
+                    if role == 'runtime':
+                        self.app.state.publish_base(archive=result['archive'], tag=image,
+                                                    system=system, inventory=inspection)
+                    elif self.app.state.get('builder_mode') != 'runtime':
+                        self.app.state.publish_builder(archive=result['archive'], tag=image,
+                                                       system=system, inventory=inspection)
+                    self.refresh_selected_archives()
                     messagebox.showinfo('Docker TAR saved',
-                            'Saved the complete image without rebuilding.\n\n' + result['archive'], parent=self)
+                            'Saved the complete image with embedded inventory and provenance.\n'
+                            'Only the metadata layer was added; applications were not recompiled.\n\n'
+                            + result['archive'], parent=self)
             try:
                 self.after(0, finish)
             except RuntimeError:
@@ -1651,9 +1651,9 @@ done
                     try:
                         archive_stat = Path(rec["path"]).stat()
                         metadata_now['archive_stamp'] = {'size': archive_stat.st_size, 'mtime_ns': archive_stat.st_mtime_ns}
-                        self._sidecar_path(rec["path"]).write_text(json.dumps(metadata_now, indent=2), encoding="utf-8")
+                        self._log('Inventory retained in project state; export a new TAR to embed refreshed inspection results.\n')
                     except Exception as e:
-                        self._log(f"WARNING: could not update metadata sidecar: {e}\n")
+                        self._log(f"WARNING: could not obtain archive timestamp: {e}\n")
 
                 rec["metadata"] = metadata_now
                 self._show_record_inventory(rec)
@@ -1673,7 +1673,7 @@ done
                     f"Python packages: {len(result.get('packages', {}).get('python', []))}\n"
                     f"R packages: {len(result.get('packages', {}).get('r', []))}\n"
                     f"JAR files indexed: {len(result.get('packages', {}).get('jars', []))}\n" +
-                    ("Inventory saved in project state. Save project JSON to preserve it.\n" if rec.get("tag_only") else f"Metadata saved to: {self._sidecar_path(rec['path'])}\n")
+                    'Inventory is in project state. Export the image to embed it in a self-contained TAR.\n' 
                 )
                 self.refresh_selected_archives()
 

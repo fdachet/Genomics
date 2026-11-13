@@ -2,6 +2,8 @@ import json
 from copy import deepcopy
 from pathlib import Path
 
+from docker_image_checkpoint import read_checkpoint_metadata
+
 
 def effective_builder_image(state):
     mode = state.get('builder_mode')
@@ -187,23 +189,19 @@ class ProjectState(dict):
                 dict.__setitem__(self, system_key, deepcopy(embedded_system))
                 current_system = embedded_system
 
-            sidecar = Path(archive_value).with_suffix(".json")
-            if not sidecar.is_file():
+            try:
+                metadata = read_checkpoint_metadata(archive_value)
+            except (OSError, ValueError) as exc:
+                metadata = {}
+                self.last_load_metadata_report.append(
+                    f"{role}: cannot read embedded metadata from TAR: {exc}"
+                )
+            if not metadata:
                 if not current_system or not current_inventory:
                     self.last_load_metadata_report.append(
-                        f"{role}: metadata sidecar unavailable ({sidecar}); "
-                        "saved values preserved. Use Tab 2 to inspect the archive if needed."
+                        f"{role}: no embedded inventory in selected TAR; "
+                        "saved project values retained. Inspect in Tab 2 if needed."
                     )
-                continue
-
-            try:
-                metadata = json.loads(sidecar.read_text(encoding="utf-8-sig"))
-                if not isinstance(metadata, dict):
-                    raise ValueError("sidecar root is not a JSON object")
-            except (OSError, ValueError, UnicodeError) as exc:
-                self.last_load_metadata_report.append(
-                    f"{role}: could not read metadata sidecar ({sidecar}): {exc}"
-                )
                 continue
 
             inspection = metadata.get("inspection")
@@ -214,8 +212,23 @@ class ProjectState(dict):
                 inspected_system = {}
 
             updated = []
-            
-            
+            if metadata.get('checkpoint_format') == 'component-builder-embedded-inventory-v1':
+                if inspection and current_inventory != inspection:
+                    dict.__setitem__(self, inventory_key, deepcopy(inspection))
+                    updated.append('inventory')
+                if inspected_system and current_system != inspected_system:
+                    dict.__setitem__(self, system_key, deepcopy(inspected_system))
+                    updated.append('OS/architecture/libc')
+                embedded_tag = str(metadata.get('docker_tag') or '').strip()
+                if embedded_tag and dict.get(self, tag_key, '') != embedded_tag:
+                    dict.__setitem__(self, tag_key, embedded_tag)
+                    updated.append('Docker tag')
+                if updated:
+                    self.last_load_metadata_report.append(
+                        f"{role}: restored {', '.join(updated)} from the image TAR."
+                    )
+                continue
+
             merged_inventory = deepcopy(current_inventory)
             for field, value in inspection.items():
                 if not merged_inventory.get(field) and value:
@@ -239,11 +252,11 @@ class ProjectState(dict):
 
             if updated:
                 self.last_load_metadata_report.append(
-                    f"{role}: restored {', '.join(updated)} from {sidecar.name}."
+                    f"{role}: restored {', '.join(updated)} from the image TAR."
                 )
             elif not current_system or not current_inventory:
                 self.last_load_metadata_report.append(
-                    f"{role}: metadata sidecar lacks the missing inspection fields."
+                    f"{role}: image TAR lacks the missing inspection fields."
                 )
 
     def load_dict(self, data, notify=True):

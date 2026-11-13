@@ -9,7 +9,7 @@ from docker_windows_diagnostics import DockerWindowsDiagnostics
 from network_policy import POLICY_OFFLINE, POLICY_APPROVAL, normalize_policy
 from build_modes import normalize_mode
 from project_state import effective_builder_image
-from docker_image_checkpoint import save_image_checkpoint, load_image_checkpoint
+from docker_image_checkpoint import save_image_checkpoint, load_image_checkpoint, read_checkpoint_metadata
 from workflow_toolbar import add_more_menu
 from builder_presets import detect_runtime_image_system
 
@@ -324,14 +324,16 @@ class ProjectStateTab(tk.Frame):
                                builder_system={} if both else system,
                                builder_inventory={} if both else inventory)
         else:
+            inventory = result.get('inventory', {})
+            system = result.get('system', {})
             if role == "runtime" or (role == "builder" and both and str(state.get("base_image", "") or "") == tag):
-                changes["runtime_base_archive"] = archive
+                changes.update(runtime_base_archive=archive, base_image=tag,
+                               base_inventory=inventory, base_system=system)
             if role == "builder" or (role == "runtime" and both and effective_builder_image(state) == tag):
                 changes["builder_base_archive"] = archive
                 changes["builder_image"] = tag
-                if not state.get("builder_inventory") and str(state.get("base_image", "") or "") == tag:
-                    changes["builder_inventory"] = state.get("base_inventory", {})
-                    changes["builder_system"] = state.get("base_system", {})
+                changes["builder_inventory"] = inventory
+                changes["builder_system"] = system
         if changes:
             state.update(changes)
         verb = "saved" if action == "save" else "loaded"
@@ -387,12 +389,8 @@ class ProjectStateTab(tk.Frame):
         return str(Path.cwd())
 
     def _read_archive_sidecar(self, archive_path):
-        sidecar = Path(archive_path).with_suffix(".json")
-        if not sidecar.is_file():
-            return {}
         try:
-            data = json.loads(sidecar.read_text(encoding="utf-8-sig"))
-            return data if isinstance(data, dict) else {}
+            return read_checkpoint_metadata(archive_path)
         except Exception:
             return {}
 
@@ -456,7 +454,7 @@ class ProjectStateTab(tk.Frame):
         if not metadata:
             self.output.insert(
                 "end",
-                "Runtime archive selected, but no matching .json metadata sidecar was found. "
+                "Runtime TAR has no embedded inventory snapshot. "
                 "Open Tab 2 to load/inspect the archive and determine its Docker tag and inventory.\\n",
             )
         elif not tag:
@@ -506,7 +504,7 @@ class ProjectStateTab(tk.Frame):
         if not metadata:
             self.output.insert(
                 "end",
-                "Builder archive selected, but no matching .json metadata sidecar was found. "
+                "Builder TAR has no embedded inventory snapshot. "
                 "Open Tab 2 to load the archive and determine its Docker tag.\\n",
             )
         elif not tag:
@@ -672,7 +670,7 @@ class ProjectStateTab(tk.Frame):
                 "Project state",
                 "Project loaded; Runtime Tab 0 and Builder Tab 1 are available.\n"
                 "Runtime and builder metadata restored where available; "
-                "see Link / validation messages for any missing sidecars.",
+                "see Link / validation messages for missing embedded inventory data.",
                 parent=self,
             )
         except Exception as exc:

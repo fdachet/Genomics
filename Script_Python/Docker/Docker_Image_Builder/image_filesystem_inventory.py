@@ -9,6 +9,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from embedded_image_metadata import read_embedded_image_metadata
+
 
 class InspectionCancelled(Exception):
     pass
@@ -255,7 +257,8 @@ def _scan_layer(layer, files, metadata, report, cancel, deadline, layer_index, l
                 files[name] = ('file', member.mode, '', member.size)
                 if name in ('etc/os-release', 'usr/lib/os-release', 'etc/debian_version', 'etc/alpine-release',
                             'var/lib/dpkg/status', 'lib/apk/db/installed',
-                            'opt/component-builder/component_provenance.json'):
+                            'opt/component-builder/component_provenance.json',
+                            'opt/component-builder/image_inventory.json'):
                     read = _read_small(entries, member)
                     if read is not None:
                         metadata[name] = read
@@ -280,6 +283,11 @@ def inspect_saved_tar(archive, image='', report=None, cancel=None, timeout=300):
     report = report or (lambda *_: None)
     deadline = time.monotonic() + timeout if timeout else None
     report('stage', 'Read saved image manifest')
+    embedded = read_embedded_image_metadata(archive, preferred_tag=image)
+    if embedded:
+        report('stage', 'Use complete inventory embedded in image TAR')
+        report('detail', 'Recovered installed software and provenance directly from the final image layer')
+        return embedded['inspection']
     with tarfile.open(str(archive), mode='r:*') as outer:
         try:
             member = outer.getmember('manifest.json')
