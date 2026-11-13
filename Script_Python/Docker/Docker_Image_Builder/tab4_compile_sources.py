@@ -523,7 +523,7 @@ class SourcesTab(tk.Frame):
         builder = effective_builder_image(state)
         self.source_network.set(bool(state.get('allow_source_network', False)))
         self.accept_partial_output.set(bool(state.get('accept_partial_source_output', False)))
-        self.builder.set('Builder (Tab 1): ' + (builder or 'NOT SELECTED') + (' (same as runtime)' if not state.get('builder_base_archive') else '') + '    |    Runtime (Tab 1): ' + (state.get('base_image', '') or 'NOT SELECTED'))
+        self.builder.set('Builder (Tab 1): ' + (builder or 'NOT SELECTED') + (' (same as runtime)' if not state.get('builder_base_archive') else '') + '    |    Runtime (Tab 0): ' + (state.get('base_image', '') or 'NOT SELECTED'))
         names = [str(c.get('name', '')) for c in self._components() if c.get('enabled', True) and str(c.get('kind', '')).lower() == 'source']
         self.combo['values'] = names
         self._loading = True

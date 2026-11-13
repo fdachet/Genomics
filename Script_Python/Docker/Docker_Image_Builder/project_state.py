@@ -4,12 +4,16 @@ from pathlib import Path
 
 
 def effective_builder_image(state):
+    mode = state.get('builder_mode')
+    if mode == 'runtime':
+        return str(state.get('base_image', '') or '').strip()
     explicit = str(state.get('builder_image', '') or '').strip()
     if explicit:
         return explicit
-    if str(state.get('builder_base_archive', '') or '').strip():
+    if mode == 'separate' or str(state.get('builder_base_archive', '') or '').strip():
         return ''
     return str(state.get('base_image', '') or '').strip()
+
 
 
 class ProjectState(dict):
@@ -18,6 +22,9 @@ class ProjectState(dict):
         "export_image_dir": "",
         "runtime_base_archive": "",
         "builder_base_archive": "",
+        "builder_mode": "runtime",
+        "builder_preset": {},
+        "builder_source_override": "",
         "gui_loaded_images": [],
         "base_image": "",
         "builder_image": "",
@@ -94,6 +101,8 @@ class ProjectState(dict):
         return self._revision
 
     def _apply_defaults(self):
+        if 'builder_mode' not in self:
+            dict.__setitem__(self, 'builder_mode', 'separate' if (self.get('builder_image') or self.get('builder_base_archive')) else 'runtime')
         for key, value in self.DEFAULTS.items():
             if key not in self:
                 dict.__setitem__(self, key, deepcopy(value))
@@ -278,6 +287,8 @@ class ProjectState(dict):
         self._notify("base")
 
     def publish_builder(self, archive=None, tag=None, system=None, inventory=None):
+        if tag or archive:
+            dict.__setitem__(self, 'builder_mode', 'separate')
         if archive is not None:
             dict.__setitem__(self, "builder_base_archive", archive)
         if tag is not None:

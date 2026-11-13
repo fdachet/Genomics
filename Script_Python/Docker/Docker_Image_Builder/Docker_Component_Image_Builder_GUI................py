@@ -5,6 +5,7 @@ from tkinter import messagebox, ttk
 
 from project_state import ProjectState
 from tab1_project_state import ProjectStateTab
+from tab1_builder_base import BuilderBaseTab
 from tab2_base import BaseTab
 from tab3_components import ComponentsTab
 from tab4_compile_sources import SourcesTab
@@ -56,6 +57,7 @@ class DockerImageBuilderApp(tk.Tk):
         self.notebook.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.project_tab = ProjectStateTab(self.notebook, self)
+        self.builder_tab = BuilderBaseTab(self.notebook, self)
         self.base_tab = BaseTab(self.notebook, self)
         self.components_tab = ComponentsTab(self.notebook, self)
         self.sources_tab = SourcesTab(self.notebook, self)
@@ -66,7 +68,8 @@ class DockerImageBuilderApp(tk.Tk):
         self.container_tab = ContainerTab(self.notebook, self)
         self.recognized_tab = RecognizedElementsTab(self.notebook, self)
 
-        self.notebook.add(self.project_tab, text="1. Project / Base")
+        self.notebook.add(self.project_tab, text="0. Runtime Base")
+        self.notebook.add(self.builder_tab, text="1. Builder Base")
         self.notebook.add(self.base_tab, text="2. Inventory")
         self.notebook.add(self.components_tab, text="3. Components")
         self.notebook.add(self.sources_tab, text="4. Compile")

@@ -98,13 +98,15 @@ class RuntimeTab(tk.Frame):
                  font=('Segoe UI', 10, 'bold')).pack(side='left')
         tk.Button(missing_frame, text='Add selected requirement to Tab 3', bg='#F7DC6F',
                   command=self.add_selected_requirement).pack(side='left', padx=10)
-        self.outstanding = ttk.Treeview(self, columns=('software', 'requirement', 'state', 'action'),
+        outstanding_frame = tk.Frame(self, bg='#FDEDEC')
+        outstanding_frame.pack(fill='both', padx=12, pady=(0, 4))
+        self.outstanding = ttk.Treeview(outstanding_frame, columns=('software', 'requirement', 'state', 'action'),
                                         show='headings', height=4, selectmode='browse')
         for key, caption, width in (('software', 'Required by', 180), ('requirement', 'Requirement', 255),
                                     ('state', 'Actual status', 165), ('action', 'Notes / installation plan', 640)):
             self.outstanding.heading(key, text=caption)
             self.outstanding.column(key, width=width)
-        self.outstanding.pack(fill='x', padx=12, pady=(0, 4))
+        self._sort_outstanding = self._install_scrollable_sortable_table(outstanding_frame, self.outstanding)
         self._outstanding_entries = []
 
         tk.Label(self, text='Component dependency summary', bg='#FDEDEC',
@@ -126,7 +128,10 @@ class RuntimeTab(tk.Frame):
             self.overview.column(key, width=width, anchor='w' if key in ('component', 'type', 'state') else 'center')
         self.overview.tag_configure('failed', foreground='#A93226')
         self.overview.tag_configure('good', foreground='#196F3D')
-        self.overview.pack(fill='x')
+        self._sort_overview = self._install_scrollable_sortable_table(
+            overview_frame, self.overview,
+            numeric_columns=('needed', 'found', 'missing', 'planned', 'unresolved'),
+        )
         self.overview.bind('<<TreeviewSelect>>', self._selection_changed)
 
         options = tk.Frame(self, bg='#FDEDEC')
@@ -157,15 +162,7 @@ class RuntimeTab(tk.Frame):
         self.detail.tag_configure('missing', foreground='#A93226')
         self.detail.tag_configure('found', foreground='#196F3D')
         self.detail.tag_configure('planned', foreground='#B9770E')
-        self.detail.configure(yscrollcommand=(lambda a, b: sy.set(a, b)),
-                              xscrollcommand=(lambda a, b: sx.set(a, b)))
-        sy = ttk.Scrollbar(detail_frame, orient='vertical', command=self.detail.yview)
-        sx = ttk.Scrollbar(detail_frame, orient='horizontal', command=self.detail.xview)
-        self.detail.grid(row=0, column=0, sticky='nsew')
-        sy.grid(row=0, column=1, sticky='ns')
-        sx.grid(row=1, column=0, sticky='ew')
-        detail_frame.columnconfigure(0, weight=1)
-        detail_frame.rowconfigure(0, weight=1)
+        self._sort_detail = self._install_scrollable_sortable_table(detail_frame, self.detail)
 
         log_header = tk.Frame(self, bg='#FDEDEC')
         log_header.pack(fill='x', padx=12)
@@ -177,6 +174,49 @@ class RuntimeTab(tk.Frame):
         tk.Label(self, text='Static ELF binaries have no shared libraries. JARs are checked for minimum Java versions. Native checks inspect actual files in the selected runtime. A requested OS package is INSTALLED only when detected in that image.',
                  bg='#FDEDEC', fg='#78281F', anchor='w', wraplength=1450).pack(fill='x', padx=12, pady=(0, 6))
         self.refresh_from_project_state()
+
+    @staticmethod
+    def _install_scrollable_sortable_table(frame, tree, numeric_columns=()):
+        columns = tuple(tree['columns'])
+        labels = {column: tree.heading(column, option='text') for column in columns}
+        numeric_columns = set(numeric_columns)
+        sort_state = {'column': None, 'ascending': True}
+
+        def value_key(item_id, column):
+            raw = str(tree.set(item_id, column) or '').strip()
+            if column in numeric_columns:
+                try:
+                    return (0, float(raw.replace(',', '')))
+                except ValueError:
+                    return (1, raw.casefold())
+            return (0, raw.casefold())
+
+        def sort(column):
+            ascending = not (sort_state['column'] == column and sort_state['ascending'])
+            sort_state['column'] = column
+            sort_state['ascending'] = ascending
+            items = list(tree.get_children(''))
+            items.sort(key=lambda item: value_key(item, column), reverse=not ascending)
+            for index, item in enumerate(items):
+                tree.move(item, '', index)
+            for key in columns:
+                indicator = (' ▲' if ascending else ' ▼') if key == column else ''
+                tree.heading(key, text=labels[key] + indicator)
+
+        for column in columns:
+            config = tree.column(column)
+            tree.column(column, width=config['width'], stretch=False)
+            tree.heading(column, command=lambda key=column: sort(key))
+
+        vertical = ttk.Scrollbar(frame, orient='vertical', command=tree.yview)
+        horizontal = ttk.Scrollbar(frame, orient='horizontal', command=tree.xview)
+        tree.configure(yscrollcommand=vertical.set, xscrollcommand=horizontal.set)
+        tree.grid(row=0, column=0, sticky='nsew')
+        vertical.grid(row=0, column=1, sticky='ns')
+        horizontal.grid(row=1, column=0, sticky='ew')
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        return sort
 
     def _analysis_source(self, component):
         path, reason = self._component_file(component)

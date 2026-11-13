@@ -29,6 +29,7 @@ from docker_image_checkpoint import save_full_image_to_tar
 from final_image_updates import pending_online_requests
 from repository_package_install import repository_install_command
 from workflow_toolbar import add_more_menu
+from project_state import effective_builder_image
 
 
 class BuildTab(tk.Frame):
@@ -624,7 +625,7 @@ class BuildTab(tk.Frame):
             dockerfile = '\n'.join(lines)
             (context / 'Dockerfile').write_text(dockerfile, encoding='utf-8')
             (context / 'build_manifest.json').write_text(json.dumps({'image_name': image, 'runtime': base,
-                'builder_used_during_tab4': state.get('builder_image', '') or base,
+                'builder_used_during_tab4': effective_builder_image(state) or base,
                 'components': metadata, 'inherited_components': inherited_components,
                 'runtime_packages': sorted(set(packages)),
                 'online_installation_requests': online_requests,
@@ -816,7 +817,7 @@ class BuildTab(tk.Frame):
     def _activate_saved_image_as_base(self, image, archive, report):
         state = self.app.state
         original_runtime = str(report.get('base') or '').strip()
-        original_builder = str(state.get('builder_image') or '').strip()
+        original_builder = effective_builder_image(state)
         separate_builder = bool(original_builder and original_builder != original_runtime)
         installed = list(report.get('installed_components') or [])
         inherited = list(report.get('inherited_components') or [])
@@ -825,8 +826,8 @@ class BuildTab(tk.Frame):
         base_system = dict(state.get('base_system') or {})
         state.publish_base(archive=archive, tag=image, system=base_system, inventory={})
         if not separate_builder:
-            state.publish_builder(archive=archive, tag=image,
-                                  system=base_system, inventory={})
+            state.update({'builder_mode': 'runtime', 'builder_image': '', 'builder_base_archive': '',
+                          'builder_system': {}, 'builder_inventory': {}})
         installed_entries = list(installed)
         inherited_entries = list(inherited)
         installed_names = {str(entry.get('name') or '').casefold()

@@ -63,7 +63,7 @@ class BaseTab(tk.Frame):
 
         tk.Label(
             self,
-            text="2 — BASE INVENTORY / DOCKER IMAGE LOADING",
+            text="2 — BASE INVENTORY / DOCKER IMAGE INSPECTION",
             bg="#1F4E78",
             fg="white",
             font=("Segoe UI", 16, "bold"),
@@ -76,14 +76,14 @@ class BaseTab(tk.Frame):
         selection_note.pack(fill="x", padx=14, pady=(10, 5))
         tk.Label(
             selection_note,
-            text="Runtime and builder images are selected in Tab 1 — Project / Base. "
+            text="Runtime is selected in Tab 0; the builder is selected in Tab 1. "
                  "A TAR is optional: Tab 2 inspects the CURRENT selected image, including binaries "
                  "from earlier builds. New compiled outputs remain staged until assembled in Tab 6.",
             bg="#D6EAF8", fg="#154360", justify="left", anchor="w", padx=10, pady=8,
         ).pack(side="left", fill="x", expand=True)
         selectors = tk.LabelFrame(
             self,
-            text=" Runtime / builder selected in Tab 1 — READ ONLY ",
+            text=" Runtime Tab 0 / Builder Tab 1 — READ ONLY ",
             bg="#EAF2F8",
             fg="#154360",
             font=("Segoe UI", 10, "bold"),
@@ -332,6 +332,8 @@ class BaseTab(tk.Frame):
         return self._tag_record("runtime")
 
     def _builder_record(self):
+        if self.app.state.get('builder_mode') == 'runtime':
+            return self._runtime_record()
         builder_path = self.app.state.get("builder_base_archive", "")
         if builder_path:
             return self._find_record_by_path(builder_path)
@@ -1777,10 +1779,11 @@ done
 
 
         runtime_path = str(self.app.state.get("runtime_base_archive", "") or "").strip()
-        builder_path = str(self.app.state.get("builder_base_archive", "") or "").strip()
+        using_runtime_as_builder = self.app.state.get("builder_mode") == "runtime"
+        builder_path = "" if using_runtime_as_builder else str(self.app.state.get("builder_base_archive", "") or "").strip()
         selected_runtime_tag = str(self.app.state.get("base_image", "") or "").strip()
-        selected_builder_tag = str(self.app.state.get("builder_image", "") or "").strip()
-        self.runtime_display.set(runtime_path or ("Docker tag only: " + selected_runtime_tag if selected_runtime_tag else "(not selected — choose in Tab 1)"))
+        selected_builder_tag = "" if using_runtime_as_builder else str(self.app.state.get("builder_image", "") or "").strip()
+        self.runtime_display.set(runtime_path or ("Docker tag only: " + selected_runtime_tag if selected_runtime_tag else "(not selected — choose in Tab 0)"))
         self.builder_display.set(builder_path or ("Docker tag only: " + selected_builder_tag if selected_builder_tag else "(same as runtime)"))
 
         records = []
@@ -1826,7 +1829,7 @@ done
         else:
             builder = effective_builder_image(self.app.state)
             self.builder_tag.set(builder)
-            label = 'Separate builder Docker tag' if self.app.state.get('builder_image') else 'Same as runtime'
+            label = 'Separate builder Docker tag' if self.app.state.get('builder_mode') == 'separate' else 'Same as runtime'
             if builder and self._image_exists(builder):
                 self.builder_status.config(text=label + ' — LOADED', fg="#1E8449")
             elif builder:
@@ -1961,13 +1964,14 @@ done
         elif role == 'builder':
             self.builder_tag.set(expected)
             self.app.state['builder_image'] = expected
+            self.app.state['builder_mode'] = 'separate'
             self.builder_status.config(text='LOADED — VERIFIED', fg='#1E8449')
         self._log(f'{role.title()} TAR matches the Docker filesystem: {expected}\n')
         return True
 
     def load_selected_bases(self):
         runtime_path = str(self.app.state.get("runtime_base_archive", "") or "").strip()
-        builder_path = str(self.app.state.get("builder_base_archive", "") or "").strip()
+        builder_path = "" if self.app.state.get("builder_mode") == "runtime" else str(self.app.state.get("builder_base_archive", "") or "").strip()
         if runtime_path:
             runtime_rec = self._find_record_by_path(runtime_path)
             if not self._load_archive(runtime_rec, "runtime"):
@@ -1986,7 +1990,7 @@ done
         else:
             builder = effective_builder_image(self.app.state)
             self.builder_tag.set(builder)
-            separate = bool(self.app.state.get('builder_image'))
+            separate = self.app.state.get('builder_mode') == 'separate'
             exists = bool(builder and self._image_exists(builder))
             self.builder_status.config(text=('Separate builder Docker tag' if separate else 'Same as runtime') +
                                        (' — LOADED' if exists else ' — NOT LOADED'),

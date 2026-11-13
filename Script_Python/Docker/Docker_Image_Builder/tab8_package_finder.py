@@ -768,6 +768,7 @@ class PackageFinderTab(tk.Frame):
         elif name == 'builder':
             tag, manifest = result
             self.app.state['builder_image'] = tag
+            self.app.state['builder_mode'] = 'separate'
             self.app.state['builder_base_archive'] = ''
             records = list(self.app.state.get('package_finder_builder_installs') or [])
             records.append({'image': tag, 'from_image': manifest.get('installed_builder_base', ''),

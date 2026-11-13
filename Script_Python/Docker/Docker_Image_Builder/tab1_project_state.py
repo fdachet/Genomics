@@ -11,6 +11,7 @@ from build_modes import normalize_mode
 from project_state import effective_builder_image
 from docker_image_checkpoint import save_image_checkpoint, load_image_checkpoint
 from workflow_toolbar import add_more_menu
+from builder_presets import detect_runtime_image_system
 
 
 class ProjectStateTab(tk.Frame):
@@ -20,7 +21,7 @@ class ProjectStateTab(tk.Frame):
 
         tk.Label(
             self,
-            text="1 — PROJECT / BASE SELECTION",
+            text="0 — RUNTIME BASE / PROJECT SETUP",
             bg="#424949",
             fg="white",
             font=("Segoe UI", 16, "bold"),
@@ -36,12 +37,12 @@ class ProjectStateTab(tk.Frame):
         self.build_mode = tk.StringVar(value="permissive")
 
         load_frame = tk.LabelFrame(
-            self, text=" 1 — Load an existing Docker image from TAR ",
+            self, text=" 0 — Load runtime Docker image from TAR ",
             bg="#E8F6F3", fg="#117864", font=("Segoe UI", 11, "bold"), padx=12, pady=10,
         )
         load_frame.pack(fill="x", padx=12, pady=(10, 10))
         load_button = tk.Button(
-            load_frame, text="Load Docker image from .tar", bg="#2874A6", fg="white",
+            load_frame, text="Load runtime Docker image from .tar", bg="#2874A6", fg="white",
             font=("Segoe UI", 11, "bold"), padx=14, pady=6,
             command=lambda: self._checkpoint_action("load", "runtime"),
         )
@@ -78,11 +79,6 @@ class ProjectStateTab(tk.Frame):
             bg="#EAF3FA", fg="#154360", font=("Segoe UI", 10, "bold"), padx=10, pady=8,
         )
         runtime_info.pack(fill="x", padx=12, pady=(0, 8))
-        builder_info = tk.LabelFrame(
-            self, text=" BUILDER BASE — Temporary environment for compiling sources ",
-            bg="#F0F3F4", fg="#424949", font=("Segoe UI", 10, "bold"), padx=10, pady=8,
-        )
-        builder_info.pack(fill="x", padx=12, pady=(0, 8))
 
         def add_field(frame, row, key, label, browse_command=None, extra_button=False):
             tk.Label(frame, text=label + ":", bg=frame.cget("bg"),
@@ -109,17 +105,6 @@ class ProjectStateTab(tk.Frame):
         add_field(runtime_info, 2, "base_os", "Operating system [automatic]")
         add_field(runtime_info, 3, "base_arch", "Architecture [automatic]")
         add_field(runtime_info, 4, "base_libc", "libc [automatic]")
-
-        add_field(builder_info, 0, "builder_base_archive", "Builder Docker TAR [automatic]", extra_button=True)
-        add_field(builder_info, 1, "builder_image", "Builder Docker tag [automatic]")
-        add_field(builder_info, 2, "builder_os", "Operating system [automatic]")
-        add_field(builder_info, 3, "builder_arch", "Architecture [automatic]")
-        add_field(builder_info, 4, "builder_libc", "libc [automatic]")
-        tk.Label(
-            builder_info, text="Use 'Same as runtime' to clear the separate builder selection."
-            " Separate builder images can be selected in the base inventory tab.",
-            bg=builder_info.cget("bg"), fg="#566573", anchor="w",
-        ).grid(row=5, column=0, columnspan=3, sticky="w", pady=(6, 0))
 
         counts = tk.Frame(self, bg="#F4F6F7")
         counts.pack(fill="x", padx=12, pady=(0, 10))
@@ -294,6 +279,9 @@ class ProjectStateTab(tk.Frame):
                     )
                 else:
                     result = load_image_checkpoint(chosen, progress=progress)
+                    if role == "runtime":
+                        detected = detect_runtime_image_system(result.get("tag", ""))
+                        result["system"] = {**(result.get("system") or {}), **detected}
                 self.after(0, lambda: self._checkpoint_finished(action, role, both, result, ""))
             except Exception as exc:
                 error = str(exc)
@@ -579,16 +567,11 @@ class ProjectStateTab(tk.Frame):
         values = {
             "project_dir": state.get("project_dir", ""),
             "export_image_dir": state.get("export_image_dir", ""),
-            "runtime_base_archive": state.get("runtime_base_archive", "") or ("(Docker tag only; load a TAR using the button above)" if state.get("base_image") else ""),
+            "runtime_base_archive": state.get("runtime_base_archive", "") or ("(Docker tag only)" if state.get("base_image") else ""),
             "base_image": state.get("base_image", ""),
-            "builder_base_archive": state.get("builder_base_archive", "") or ("(Builder Docker tag only)" if explicit_builder else "(same as runtime)"),
-            "builder_image": effective_builder_image(state) or "(same as runtime)",
             "base_os": system.get("os", ""),
             "base_arch": system.get("architecture", ""),
             "base_libc": system.get("glibc", ""),
-            "builder_os": builder_system.get("os", ""),
-            "builder_arch": builder_system.get("architecture", ""),
-            "builder_libc": builder_system.get("glibc", ""),
             "generated_context": state.get("generated_context", ""),
         }
         for key, value in values.items():
@@ -606,7 +589,6 @@ class ProjectStateTab(tk.Frame):
         self.count_text.set(
             f"Shared-state revision: {getattr(state, 'revision', 'n/a')}   |   "
             f"Runtime: {len(executables)} executables / {len(os_packages)} OS packages   |   "
-            f"Builder: {len(builder_executables)} executables / {len(builder_os_packages)} OS packages   |   "
             f"Components: {len(components)}"
         )
 
@@ -688,7 +670,7 @@ class ProjectStateTab(tk.Frame):
                 self.output.insert("end", "All available saved base metadata is displayed.\n")
             messagebox.showinfo(
                 "Project state",
-                "Project loaded and Tab 1 refreshed.\n"
+                "Project loaded; Runtime Tab 0 and Builder Tab 1 are available.\n"
                 "Runtime and builder metadata restored where available; "
                 "see Link / validation messages for any missing sidecars.",
                 parent=self,
