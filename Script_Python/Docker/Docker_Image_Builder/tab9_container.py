@@ -7,6 +7,7 @@ import shlex
 import subprocess
 import os
 import threading
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
@@ -88,7 +89,7 @@ def is_managed_container(info):
 
 def docker_image_id(image):
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
-                            capture_output=True, text=True, errors='replace', timeout=30,
+                            capture_output=True, text=True, errors='replace', timeout=90,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     return result.stdout.strip() if result.returncode == 0 else ''
 
@@ -122,7 +123,7 @@ def mount_error_guidance(error, source):
 
 def inspect_container(name):
     process = subprocess.run(['docker', 'container', 'inspect', name], capture_output=True,
-                             text=True, errors='replace', timeout=20,
+                             text=True, errors='replace', timeout=90,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if process.returncode:
         return None
@@ -132,7 +133,7 @@ def inspect_container(name):
 
 def list_docker_images():
     process = subprocess.run(['docker', 'image', 'ls', '--format', '{{json .}}'], capture_output=True,
-                             text=True, errors='replace', timeout=35,
+                             text=True, errors='replace', timeout=90,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if process.returncode:
         raise RuntimeError((process.stderr or process.stdout or 'Unable to list images in Docker Desktop.').strip())
@@ -177,7 +178,7 @@ class ContainerTab(tk.Frame):
         self._source_tar_path = ''
         self._session_image_id = ''
         self._session_image_tag = ''
-        self.mount_enabled = tk.BooleanVar(value=False)
+        self.mount_enabled = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value='Select an image or Docker TAR. The container will start automatically.')
         self._render()
         self.refresh_from_project_state()
@@ -268,7 +269,7 @@ class ContainerTab(tk.Frame):
         def action():
             if runtime_tag:
                 check = subprocess.run(['docker', 'image', 'inspect', runtime_tag],
-                                       capture_output=True, text=True, errors='replace', timeout=20,
+                                       capture_output=True, text=True, errors='replace', timeout=90,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 if check.returncode == 0:
                     self.events.put(('image_selected', runtime_tag, True, open_terminal, archive_name))
@@ -404,7 +405,7 @@ class ContainerTab(tk.Frame):
         selected = ''
         if expected_tag:
             check = subprocess.run(['docker', 'image', 'inspect', expected_tag],
-                                   capture_output=True, text=True, errors='replace', timeout=20,
+                                   capture_output=True, text=True, errors='replace', timeout=90,
                                    creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
             if check.returncode == 0:
                 selected = expected_tag
@@ -471,7 +472,7 @@ class ContainerTab(tk.Frame):
             if candidate:
                 self.host_folder.set(candidate)
         self.network.set(bool(data.get('network', False)))
-        self.mount_enabled.set(bool(data.get('mount_enabled', False)))
+        self.mount_enabled.set(bool(data.get('mount_enabled', True)))
         if not self._source_tar_path and self.image.get().strip() == runtime_tag and runtime_archive:
             self._source_tar_path = runtime_archive
     def _append(self, value):
@@ -562,39 +563,56 @@ class ContainerTab(tk.Frame):
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _run(self, args, timeout=45, check=True):
-        self.events.put(('log', '$ ' + subprocess.list2cmdline(args) + '\n'))
+    def _run(self, args, timeout=180, check=True):
+        command = subprocess.list2cmdline(args)
+        self.events.put(('log', '$ ' + command + '\n'))
+        self.events.put(('status', 'Docker: ' + ' '.join(args[1:3]) + ' ...'))
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, errors='replace',
                                    bufsize=1, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self._active_process = process
+        output = ''
+        started = time.monotonic()
         try:
-            if timeout is not None:
-                try:
-                    output, _ = process.communicate(timeout=timeout)
-                except subprocess.TimeoutExpired:
-                    process.kill()
+            if timeout is None:
+                chunks = []
+                for line in process.stdout:
+                    chunks.append(line)
+                    self.events.put(('log', line))
+                output = ''.join(chunks)
+                code = process.wait()
+            else:
+                timeout = max(0.01, float(timeout))
+                while True:
+                    elapsed = time.monotonic() - started
+                    remaining = timeout - elapsed
+                    if remaining <= 0:
+                        process.kill()
+                        partial, _ = process.communicate()
+                        output = partial or output
+                        if output:
+                            self.events.put(('log', output))
+                        raise RuntimeError('Docker command timed out after ' + str(round(timeout, 1)) +
+                                           ' seconds: ' + command +
+                                           ('\nOutput: ' + output.strip()[-1800:] if output.strip() else '\nNo response from Docker.'))
                     try:
-                        output, _ = process.communicate(timeout=5)
+                        output, _ = process.communicate(timeout=min(10.0, remaining))
+                        code = process.returncode
+                        break
                     except subprocess.TimeoutExpired:
-                        output = ''
-                    if output:
-                        self.events.put(('log', output))
-                    raise RuntimeError('Docker did not respond within ' + str(timeout) + ' seconds. The command was stopped. Use Diagnose Docker / Mount to identify the problem.')
+                        elapsed = time.monotonic() - started
+                        self.events.put(('status', 'Waiting for Docker (' + str(int(elapsed)) +
+                                         ' seconds): ' + ' '.join(args[1:3])))
                 if output:
                     self.events.put(('log', output))
-                code = process.returncode
-            else:
-                for line in process.stdout:
-                    self.events.put(('log', line))
-                code = process.wait()
         finally:
             self._active_process = None
             if process.stdout:
                 process.stdout.close()
         self.events.put(('log', 'Exit code: ' + str(code) + '\n'))
         if code and check:
-            raise RuntimeError('Docker command returned exit code ' + str(code) + ': ' + (output.strip()[-1800:] if timeout is not None else 'See output log.'))
+            raise RuntimeError('Docker command returned exit code ' + str(code) + ': ' + command +
+                               ('\n' + output.strip()[-1800:] if output.strip() else ''))
         return code
 
     def _archive_for(self, config):
@@ -623,7 +641,7 @@ class ContainerTab(tk.Frame):
             raise RuntimeError('Docker image is not loaded and no saved TAR was found for ' + image +
                                '. Select the TAR in Tab 9 to import it.')
         self.events.put(('log', 'Loading image from TAR before creating the container: ' + archive + '\n'))
-        self._run(['docker', 'load', '-i', archive], timeout=None)
+        self._run(['docker', 'load', '-i', archive], timeout=1200)
         image_id = docker_image_id(image)
         if not image_id:
             raise RuntimeError('The TAR loaded, but did not provide the selected image tag: ' + image +
@@ -641,7 +659,7 @@ class ContainerTab(tk.Frame):
             return 'IMAGE CHANGED: retained ' + image + ' because its image ID differs from the session image'
         self.events.put(('log', 'Removing the selected Docker image (the saved TAR is unchanged): ' + image + '\n'))
         try:
-            self._run(['docker', 'image', 'rm', image], timeout=90)
+            self._run(['docker', 'image', 'rm', image], timeout=180)
         except RuntimeError as exc:
             return 'IMAGE RETAINED: ' + image + ' | ' + str(exc)
         return 'IMAGE UNLOADED: ' + image
@@ -656,8 +674,8 @@ class ContainerTab(tk.Frame):
         old_image = str((existing.get('Config') or {}).get('Image') or '').strip()
         old_id = str(existing.get('Image') or '').strip()
         if (existing.get('State') or {}).get('Status') == 'running':
-            self._run(['docker', 'stop', '--time', '5', name], timeout=45)
-        self._run(['docker', 'rm', name], timeout=35)
+            self._run(['docker', 'stop', '--time', '5', name], timeout=120)
+        self._run(['docker', 'rm', name], timeout=120)
         self.events.put(('log', 'Removed previous Tab 9 container: ' + name + '\n'))
         if old_image and old_image != replacement_image:
             self.events.put(('log', self._remove_image_if_unused(old_image, old_id) + '\n'))
@@ -688,13 +706,13 @@ class ContainerTab(tk.Frame):
             args = create_container_args(current)
             self.events.put(('log', 'Creating a fresh container with the CURRENT Windows mount settings...\n'))
             try:
-                self._run(args, timeout=45)
-                self._run(['docker', 'start', current['name']], timeout=55)
+                self._run(args, timeout=240)
+                self._run(['docker', 'start', current['name']], timeout=180)
             except Exception as exc:
                 failed = inspect_container(current['name'])
                 if failed and is_managed_container(failed):
                     try:
-                        self._run(['docker', 'rm', '-f', current['name']], timeout=45)
+                        self._run(['docker', 'rm', '-f', current['name']], timeout=120)
                     except Exception:
                         pass
                 self.events.put(('log', self._remove_image_if_unused(current['image'], image_id) + '\n'))
@@ -815,8 +833,8 @@ class ContainerTab(tk.Frame):
                 image_name = str((existing.get('Config') or {}).get('Image') or image).strip()
                 image_id = str(existing.get('Image') or '').strip()
                 if (existing.get('State') or {}).get('Status') == 'running':
-                    self._run(['docker', 'stop', '--time', '5', name], timeout=45)
-                self._run(['docker', 'rm', name], timeout=35)
+                    self._run(['docker', 'stop', '--time', '5', name], timeout=120)
+                self._run(['docker', 'rm', name], timeout=120)
                 self.events.put(('log', 'Container removed: ' + name + '\n'))
             else:
                 image_name = image if session_id else ''

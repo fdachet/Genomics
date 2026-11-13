@@ -18,10 +18,13 @@ from tab10_recognized_elements import RecognizedElementsTab
 from recognized_elements import select_database
 
 
+APP_VERSION = "V19"
+
+
 class DockerImageBuilderApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Component-Based Docker Image Builder")
+        self.title("Component-Based Docker Image Builder " + APP_VERSION)
         self.geometry("1500x900")
         self.minsize(1200, 760)
         self.configure(bg="#D5D8DC")
