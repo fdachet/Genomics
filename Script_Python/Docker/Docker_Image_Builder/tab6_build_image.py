@@ -22,6 +22,7 @@ from component_provenance import make_build_provenance, parent_provenance
 from manual_installation_overrides import user_confirmed_package
 from image_removals import normalize_removals, remove_deferred_packages, dockerfile_removal_lines
 from image_component_inventory import inspect_image_components
+from runtime_path_config import final_path_directories, dockerfile_path_line
 from revision_dependencies import dependency_impact, normalize_satisfactions, projected_java_versions
 from image_compaction import show_compaction_dialog
 from local_package_catalog import local_installation_plan, installed_packages
@@ -593,7 +594,8 @@ class BuildTab(tk.Frame):
             if mode != ASSEMBLY:
                 lines.extend(optional_lines(custom_script_lines(env['config']['post_commands'], context, 'after'), 'Custom post-installation', bool(env['config']['allow_custom_network']), mode))
                 lines.extend(optional_lines(custom_script_lines(env['config']['verify_commands'], context, 'verify'), 'Custom verification', False, mode))
-            if paths:
+            final_directories = final_path_directories(state)
+            if final_directories is None and paths:
                 lines.extend(['ENV PATH=' + json.dumps(':'.join(dict.fromkeys(paths)) + ':${PATH}'), ''])
             pending = {'status': 'INSTALLATION_ATTEMPTED' if install_now else 'NOT_INSTALLED',
                        'os_packages': list(packages), 'java_requirements': plan.get('java', []),
@@ -622,6 +624,8 @@ class BuildTab(tk.Frame):
                           'COPY ["pending_requirements.json", "/opt/component-builder/pending_requirements.json"]', ''])
             lines.append('')
             lines.extend(custom_directives(env['config']['dockerfile_directives']))
+            if final_directories is not None:
+                lines.extend([dockerfile_path_line(final_directories), ''])
             dockerfile = '\n'.join(lines)
             (context / 'Dockerfile').write_text(dockerfile, encoding='utf-8')
             (context / 'build_manifest.json').write_text(json.dumps({'image_name': image, 'runtime': base,
@@ -633,6 +637,7 @@ class BuildTab(tk.Frame):
                 'installation_attempted': install_now, 'local_os_package_archives': staged_archives, 'requested_requirements': pending,
                 'skipped_inputs': issues, 'component_provenance': provenance, 'image_removals': removals,
                 'dependency_satisfactions': normalize_satisfactions(state.get('dependency_satisfactions')),
+                'configured_runtime_path': final_directories,
                 'projected_dependency_impacts': projected_dependencies}, indent=2), encoding='utf-8')
         except Exception as exc:
             messagebox.showerror('Build context', str(exc), parent=self)

@@ -65,12 +65,37 @@ def validate_config(config):
     return {'image': image, 'name': name, 'host_folder': source, 'mount_point': posixpath.normpath(target),
             'workdir': posixpath.normpath(workdir), 'mount_enabled': enabled, 'network': bool(config.get('network')),
             'read_only': bool(config.get('read_only')),
-            'command': str(config.get('command', '') or '')}
+            'command': str(config.get('command', '') or ''),
+            'source_tar': str(config.get('source_tar', '') or '').strip()}
+
+
+MANAGED_LABEL = 'org.component-image-builder.tab9.managed'
+
+
+def is_managed_container(info):
+    config = (info or {}).get('Config') or {}
+    labels = config.get('Labels') or {}
+    if labels.get(MANAGED_LABEL) == 'true':
+        return True
+    entrypoint = config.get('Entrypoint') or []
+    command = config.get('Cmd') or []
+    if isinstance(entrypoint, str):
+        entrypoint = [entrypoint]
+    if isinstance(command, str):
+        command = [command]
+    return entrypoint == ['/bin/sh'] and command == ['-c', 'while :; do sleep 3600; done']
+
+
+def docker_image_id(image):
+    result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
+                            capture_output=True, text=True, errors='replace', timeout=30,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    return result.stdout.strip() if result.returncode == 0 else ''
 
 
 def create_container_args(config):
     data = validate_config(config)
-    args = ['docker', 'create', '--pull', 'never', '--name', data['name']]
+    args = ['docker', 'create', '--pull', 'never', '--name', data['name'], '--label', MANAGED_LABEL + '=true']
     if data['mount_enabled']:
         mount = 'type=bind,source=' + data['host_folder'] + ',target=' + data['mount_point']
         if data['read_only']:
@@ -149,6 +174,9 @@ class ContainerTab(tk.Frame):
         self._details = []
         self._pending_auto_start = None
         self._pending_terminal_open = False
+        self._source_tar_path = ''
+        self._session_image_id = ''
+        self._session_image_tag = ''
         self.mount_enabled = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value='Select an image or Docker TAR. The container will start automatically.')
         self._render()
@@ -199,15 +227,14 @@ class ContainerTab(tk.Frame):
 
         controls = tk.Frame(self, bg='#EAF3FA')
         controls.pack(fill='x', padx=17, pady=7)
-        self.start_button = self._button(controls, 'Create / Start Container', self.start_container, '#1D9D78')
+        self.start_button = self._button(controls, 'Start New Container', self.start_container, '#1D9D78')
         self._button(controls, 'Open Runtime Container', lambda: self.use_tab1_runtime(open_terminal=True), '#68CBB0')
         self._button(controls, 'Open Container', self.open_terminal, '#78C7F0')
-        self._button(controls, 'Stop Container', self.stop_container, '#D88755')
+        self._button(controls, 'Stop + Remove Container and Image', self.stop_container, '#D88755')
         self._button(controls, 'Save Settings', self.save_settings, '#AED6F1')
         add_more_menu(controls, [
             ("Check container status", self.check_container),
             ("Diagnose Docker or Windows mount", self.diagnose_docker),
-            ("Remove stopped container", self.remove_container),
             ("View operation details", self.show_operation_details),
         ], "#EAF3FA")
 
@@ -216,16 +243,6 @@ class ContainerTab(tk.Frame):
         tk.Label(status_box, textvariable=self.status, bg='#D8EFF0', fg='#155B62',
                  font=('Segoe UI', 10, 'bold'), anchor='w', wraplength=1350).pack(fill='x')
 
-        instructions = tk.LabelFrame(self, text='Interactive Linux terminal', bg='#EAF3FA',
-                                     fg='#22536D', padx=16, pady=14,
-                                     font=('Segoe UI', 11, 'bold'))
-        instructions.pack(fill='x', padx=17, pady=(12, 10))
-        tk.Label(instructions, text='Open Container launches an interactive Bash terminal (or /bin/sh if Bash is unavailable).',
-                 bg='#EAF3FA', fg='#244A61', anchor='w', font=('Segoe UI', 11)).pack(fill='x')
-        tk.Label(instructions, text='Java applications are started with:  java -jar /path/to/application.jar',
-                 bg='#EAF3FA', fg='#244A61', anchor='w', font=('Consolas', 10)).pack(fill='x', pady=(5, 0))
-        tk.Label(instructions, text='Image and container operations are reported above. Detailed diagnostics are available under More tools.',
-                 bg='#EAF3FA', fg='#486E80', anchor='w', font=('Segoe UI', 9)).pack(fill='x', pady=(5, 0))
 
     def _field(self, parent, row, label, variable):
         tk.Label(parent, text=label, bg='#EAF3FA', anchor='w', width=26,
@@ -254,7 +271,7 @@ class ContainerTab(tk.Frame):
                                        capture_output=True, text=True, errors='replace', timeout=20,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 if check.returncode == 0:
-                    self.events.put(('image_selected', runtime_tag, True, open_terminal))
+                    self.events.put(('image_selected', runtime_tag, True, open_terminal, archive_name))
                     return 'RUNTIME IMAGE SELECTED: ' + runtime_tag + ' | Starting container automatically.'
             if not archive_name:
                 raise RuntimeError('The Tab 0 runtime tag is not loaded in Docker Desktop and no TAR path is recorded. Reload the TAR in Tab 0.')
@@ -269,6 +286,7 @@ class ContainerTab(tk.Frame):
         image = str(self.app.state.get('built_image') or self.app.state.get('image_name') or '').strip()
         if image:
             self.image.set(image)
+            self._source_tar_path = str(self.app.state.get('last_full_image_tar') or '')
             self.start_container(automatic=True)
         else:
             messagebox.showwarning('Image', 'Build or select your final Docker image in Tab 6.', parent=self)
@@ -324,6 +342,7 @@ class ContainerTab(tk.Frame):
                 return
             tag = images[int(selected[0])]['name']
             self.image.set(tag)
+            self._source_tar_path = ''
             self.status.set('SELECTED DOCKER IMAGE: ' + tag + ' | Starting container automatically.')
             window.destroy()
             self.start_container(automatic=True)
@@ -394,7 +413,7 @@ class ContainerTab(tk.Frame):
         if not selected and not tags and len(image_ids) == 1:
             selected = image_ids[0]
         if selected:
-            self.events.put(('image_selected', selected, True, open_terminal))
+            self.events.put(('image_selected', selected, True, open_terminal, str(archive)))
             return 'IMAGE LOADED FROM ' + (source or 'TAR').upper() + ': ' + selected + ' | Starting container automatically.'
         self.events.put(('images', list_docker_images()))
         return 'IMAGE LOADED: Multiple image tags found. Select the image to start automatically.'
@@ -410,7 +429,8 @@ class ContainerTab(tk.Frame):
         return {'name': self.name.get(), 'image': self.image.get(),
                 'host_folder': self.host_folder.get(), 'mount_point': self.mount_point.get(),
                 'workdir': self.workdir.get(), 'network': self.network.get(),
-                'read_only': False, 'mount_enabled': self.mount_enabled.get()}
+                'read_only': False, 'mount_enabled': self.mount_enabled.get(),
+                'source_tar': self._source_tar_path}
 
     def save_settings(self):
         try:
@@ -435,6 +455,7 @@ class ContainerTab(tk.Frame):
             self.runtime_source_info.set('Tab 0 runtime Docker tag: ' + runtime_tag + '  |  No TAR recorded')
         else:
             self.runtime_source_info.set('Tab 0 runtime: no image selected')
+        self._source_tar_path = str(data.get('source_tar') or '')
         default_image = str(self.app.state.get('built_image') or self.app.state.get('base_image')
                             or self.app.state.get('image_name') or '').strip()
         for key, variable in (('name', self.name), ('image', self.image),
@@ -451,6 +472,8 @@ class ContainerTab(tk.Frame):
                 self.host_folder.set(candidate)
         self.network.set(bool(data.get('network', False)))
         self.mount_enabled.set(bool(data.get('mount_enabled', False)))
+        if not self._source_tar_path and self.image.get().strip() == runtime_tag and runtime_archive:
+            self._source_tar_path = runtime_archive
     def _append(self, value):
         self._details.append(str(value))
         if len(self._details) > 1500:
@@ -483,8 +506,15 @@ class ContainerTab(tk.Frame):
                     self._show_image_picker(item[1])
                 elif item[0] == 'image_selected':
                     self.image.set(item[1])
+                    self._source_tar_path = str(item[4]) if len(item) > 4 else ''
                     if len(item) > 2 and item[2]:
                         self._pending_auto_start = bool(item[3]) if len(item) > 3 else False
+                elif item[0] == 'session_started':
+                    self._session_image_tag = item[1]
+                    self._session_image_id = item[2]
+                elif item[0] == 'session_stopped':
+                    self._session_image_tag = ''
+                    self._session_image_id = ''
                 elif item[0] == 'container_config':
                     config = item[1]
                     self.name.set(config['name'])
@@ -567,6 +597,72 @@ class ContainerTab(tk.Frame):
             raise RuntimeError('Docker command returned exit code ' + str(code) + ': ' + (output.strip()[-1800:] if timeout is not None else 'See output log.'))
         return code
 
+    def _archive_for(self, config):
+        archive = str(config.get('source_tar') or '').strip()
+        if archive and Path(archive).is_file():
+            return archive
+        state = self.app.state
+        image = config['image']
+        if image == str(state.get('base_image') or '').strip():
+            candidate = str(state.get('runtime_base_archive') or '').strip()
+            if candidate and Path(candidate).is_file():
+                return candidate
+        if image in (str(state.get('built_image') or '').strip(), str(state.get('image_name') or '').strip()):
+            candidate = str(state.get('last_full_image_tar') or '').strip()
+            if candidate and Path(candidate).is_file():
+                return candidate
+        return ''
+
+    def _ensure_image_loaded(self, config):
+        image = config['image']
+        image_id = docker_image_id(image)
+        if image_id:
+            return image_id
+        archive = self._archive_for(config)
+        if not archive:
+            raise RuntimeError('Docker image is not loaded and no saved TAR was found for ' + image +
+                               '. Select the TAR in Tab 9 to import it.')
+        self.events.put(('log', 'Loading image from TAR before creating the container: ' + archive + '\n'))
+        self._run(['docker', 'load', '-i', archive], timeout=None)
+        image_id = docker_image_id(image)
+        if not image_id:
+            raise RuntimeError('The TAR loaded, but did not provide the selected image tag: ' + image +
+                               '. Choose the tag reported by Docker.')
+        return image_id
+
+    def _remove_image_if_unused(self, image, expected_id=''):
+        image = str(image or '').strip()
+        if not image:
+            return 'NO IMAGE SELECTED'
+        current_id = docker_image_id(image)
+        if not current_id:
+            return 'IMAGE ALREADY UNLOADED: ' + image
+        if expected_id and current_id != expected_id:
+            return 'IMAGE CHANGED: retained ' + image + ' because its image ID differs from the session image'
+        self.events.put(('log', 'Removing the selected Docker image (the saved TAR is unchanged): ' + image + '\n'))
+        try:
+            self._run(['docker', 'image', 'rm', image], timeout=90)
+        except RuntimeError as exc:
+            return 'IMAGE RETAINED: ' + image + ' | ' + str(exc)
+        return 'IMAGE UNLOADED: ' + image
+
+    def _remove_existing_session(self, name, replacement_image=''):
+        existing = inspect_container(name)
+        if not existing:
+            return ''
+        if not is_managed_container(existing):
+            raise RuntimeError('A container named ' + name + ' already exists but was not created by Tab 9. '
+                               'Choose another name or remove the unrelated container manually.')
+        old_image = str((existing.get('Config') or {}).get('Image') or '').strip()
+        old_id = str(existing.get('Image') or '').strip()
+        if (existing.get('State') or {}).get('Status') == 'running':
+            self._run(['docker', 'stop', '--time', '5', name], timeout=45)
+        self._run(['docker', 'rm', name], timeout=35)
+        self.events.put(('log', 'Removed previous Tab 9 container: ' + name + '\n'))
+        if old_image and old_image != replacement_image:
+            self.events.put(('log', self._remove_image_if_unused(old_image, old_id) + '\n'))
+        return old_image
+
     def start_container(self, automatic=False, open_after_start=False):
         try:
             config = validate_config(self._config())
@@ -587,62 +683,29 @@ class ContainerTab(tk.Frame):
 
         def action():
             current = dict(config)
-            existing = inspect_container(current['name'])
-            if existing and automatic:
-                original_image = (existing.get('Config') or {}).get('Image', '')
-                image_check = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', current['image']],
-                                             capture_output=True, text=True, errors='replace', timeout=20,
-                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                if image_check.returncode:
-                    raise RuntimeError('Selected image is not installed in Docker Desktop: ' + current['image'])
-                if original_image != current['image'] or str(existing.get('Image', '')).strip() != image_check.stdout.strip():
-                    base = current['name']
-                    for number in range(2, 1000):
-                        candidate = base + '-' + str(number)
-                        if inspect_container(candidate) is None:
-                            current['name'] = candidate
-                            existing = None
-                            self.events.put(('container_config', dict(current)))
-                            self.events.put(('log', 'Existing container is retained; using new name: ' + candidate + '\n'))
-                            break
-                    else:
-                        raise RuntimeError('No available container name found. Choose a different container name.')
-            if existing:
-                status = (existing.get('State') or {}).get('Status', '')
-                original_image = (existing.get('Config') or {}).get('Image', '')
-                if original_image != current['image']:
-                    raise RuntimeError('Container ' + current['name'] + ' already uses image ' + original_image + '. Remove it or choose a different name.')
-                image_check = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', current['image']],
-                                             capture_output=True, text=True, errors='replace', timeout=20,
-                                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                if image_check.returncode:
-                    raise RuntimeError('The selected image is not installed in Docker Desktop: ' + current['image'])
-                if str(existing.get('Image', '')).strip() != image_check.stdout.strip():
-                    raise RuntimeError('Container uses an older version of the selected image. Remove it or choose another name.')
-                if status == 'running':
-                    result = 'RUNNING: ' + current['name'] + ' | Existing mount settings retained'
-                else:
-                    self._run(['docker', 'start', current['name']], timeout=45)
-                    result = 'RUNNING: ' + current['name'] + ' | Existing mount settings retained'
-            else:
-                args = create_container_args(current)
-                self.events.put(('log', 'Creating container...\n'))
-                try:
-                    self._run(args, timeout=35)
-                except RuntimeError as exc:
-                    raise RuntimeError(mount_error_guidance(exc, current['host_folder'])) from exc
-                try:
-                    self._run(['docker', 'start', current['name']], timeout=45)
-                except Exception:
-                    self.events.put(('log', 'The created container remains stopped; remove it or restart it after resolving the error.\n'))
-                    raise
-                result = ('RUNNING: ' + current['name'] + ' | ' + current['host_folder'] + ' → ' + current['mount_point']
-                          if current['mount_enabled'] else 'RUNNING: ' + current['name'] + ' | No Windows folder mounted')
+            self._remove_existing_session(current['name'], replacement_image=current['image'])
+            image_id = self._ensure_image_loaded(current)
+            args = create_container_args(current)
+            self.events.put(('log', 'Creating a fresh container with the CURRENT Windows mount settings...\n'))
+            try:
+                self._run(args, timeout=45)
+                self._run(['docker', 'start', current['name']], timeout=55)
+            except Exception as exc:
+                failed = inspect_container(current['name'])
+                if failed and is_managed_container(failed):
+                    try:
+                        self._run(['docker', 'rm', '-f', current['name']], timeout=45)
+                    except Exception:
+                        pass
+                self.events.put(('log', self._remove_image_if_unused(current['image'], image_id) + '\n'))
+                raise RuntimeError(mount_error_guidance(exc, current['host_folder'])) from exc
+            self.events.put(('session_started', current['image'], image_id))
             if open_after_start:
                 self.events.put(('launch_terminal',))
-            return result
+            return ('RUNNING: ' + current['name'] + ' | Fresh container | ' +
+                    (current['host_folder'] + ' → ' + current['mount_point'] if current['mount_enabled'] else 'No Windows folder mounted'))
 
-        self._work('Start container', action)
+        self._work('Start new Docker container', action)
 
     def open_terminal(self):
         name = self.name.get().strip()
@@ -741,38 +804,28 @@ class ContainerTab(tk.Frame):
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name):
             messagebox.showerror('Stop Container', 'Enter a valid container name.', parent=self)
             return
-
-        def worker():
-            try:
-                existing = inspect_container(name)
-                if not existing:
-                    self.events.put(('status', 'NOT FOUND: ' + name))
-                    return
-                if (existing.get('State') or {}).get('Status') != 'running':
-                    self.events.put(('status', 'ALREADY STOPPED: ' + name))
-                    return
-                self.events.put(('log', '\nStopping container ' + name + ' ...\n'))
-                process = subprocess.run(['docker', 'stop', '--time', '5', name], capture_output=True,
-                                         text=True, errors='replace', timeout=35,
-                                         creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-                self.events.put(('log', (process.stdout or '') + (process.stderr or '') + '\n'))
-                self.events.put(('status', ('STOPPED: ' if process.returncode == 0 else 'STOP FAILED: ') + name))
-            except (OSError, subprocess.TimeoutExpired, ValueError) as exc:
-                self.events.put(('status', 'ERROR: ' + str(exc)))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def remove_container(self):
-        name = self.name.get().strip()
-        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name):
-            messagebox.showerror('Remove Container', 'Enter a valid container name.', parent=self)
-            return
-        if not messagebox.askyesno('Remove stopped container',
-                'Remove the stopped container "' + name + '"?\n\nChanges saved only inside that container will be lost. Windows files in the mounted folder and the Docker image will be preserved.', parent=self):
-            return
+        image = self.image.get().strip()
+        session_id = self._session_image_id if self._session_image_tag == image else ''
 
         def action():
-            self._run(['docker', 'rm', name])
-            return 'REMOVED CONTAINER: ' + name + ' | Docker image and mounted Windows files preserved.'
+            existing = inspect_container(name)
+            if existing:
+                if not is_managed_container(existing):
+                    raise RuntimeError('The container ' + name + ' was not created by Tab 9. No Docker resources were deleted.')
+                image_name = str((existing.get('Config') or {}).get('Image') or image).strip()
+                image_id = str(existing.get('Image') or '').strip()
+                if (existing.get('State') or {}).get('Status') == 'running':
+                    self._run(['docker', 'stop', '--time', '5', name], timeout=45)
+                self._run(['docker', 'rm', name], timeout=35)
+                self.events.put(('log', 'Container removed: ' + name + '\n'))
+            else:
+                image_name = image if session_id else ''
+                image_id = session_id
+            cleanup = self._remove_image_if_unused(image_name, image_id)
+            self.events.put(('session_stopped',))
+            return 'CONTAINER STOPPED AND REMOVED: ' + name + ' | ' + cleanup + ' | Original TAR preserved.'
 
-        self._work('Remove stopped container', action)
+        self._work('Stop container, remove it and unload its Docker image', action)
+
+    def remove_container(self):
+        self.stop_container()

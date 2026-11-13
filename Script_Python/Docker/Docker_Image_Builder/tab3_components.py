@@ -19,6 +19,7 @@ from runtime_source_status import runtime_component_status, runtime_compiled_inv
 from component_file_types import inspect_component_file, validate_component_type
 from dependency_planner import identify_runtime_family
 from environment_editor import EnvironmentEditor
+from runtime_path_config import read_runtime_path, split_path, component_path_directories, active_settings, new_path_settings, normalize_directory, normalize_directories
 from image_component_inventory import inspect_image_components
 from image_removals import java_runtime_packages, normalize_removals, protected_package, removal_id, safe_directory_path, safe_file_path, safe_package_name
 from dependency_resolution_ui import DependencyResolutionDialog
@@ -86,6 +87,8 @@ class ComponentsTab(tk.Frame):
                   command=self.remove_selected).pack(side="left", padx=4)
         tk.Button(toolbar, text="Install element from internet", bg="#76D7C4",
                   command=self.install_element_from_internet).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Edit image PATH", bg="#F4D03F",
+                  command=self.edit_runtime_path).pack(side="left", padx=4)
 
         self.final_update_notice = tk.StringVar(value="")
         self.image_notice = tk.StringVar(value="")
@@ -669,6 +672,135 @@ class ComponentsTab(tk.Frame):
             "    |    Failed: " + str(counts["FAILED"])
         )
         self._touch_shared_state("components")
+
+    def edit_runtime_path(self):
+        tag = str(self.app.state.get('base_image') or '').strip()
+        if not tag:
+            messagebox.showerror('PATH', 'Load a runtime image in Tab 0 first.', parent=self)
+            return
+        saved = active_settings(self.app.state)
+        if saved:
+            base_path = str(saved.get('original_path') or '')
+            origin = 'TAR / Docker'
+        else:
+            base_path, origin = read_runtime_path(self.app.state)
+            if base_path is None:
+                messagebox.showerror('PATH', 'Cannot read PATH from the runtime TAR or Docker image.', parent=self)
+                return
+        try:
+            original = split_path(base_path)
+            if saved:
+                initial = normalize_directories(saved.get('directories') or [])
+            else:
+                initial = list(original)
+                for item in component_path_directories(self.app.state):
+                    if item not in initial:
+                        initial.append(item)
+        except ValueError as exc:
+            messagebox.showerror('PATH', str(exc), parent=self)
+            return
+
+        window = tk.Toplevel(self)
+        window.title('Runtime PATH')
+        window.geometry('780x540')
+        window.minsize(540, 350)
+        window.transient(self.winfo_toplevel())
+        window.grab_set()
+
+        current = tk.LabelFrame(window, text='Current image PATH', padx=9, pady=8)
+        current.pack(fill='x', padx=12, pady=(10, 5))
+        raw = tk.Entry(current, font=('Consolas', 10), exportselection=False)
+        raw.insert(0, base_path)
+        raw.configure(state='readonly')
+        raw.pack(fill='x')
+
+        body = tk.LabelFrame(window, text='PATH directories', padx=8, pady=8)
+        body.pack(fill='both', expand=True, padx=12, pady=5)
+        holder = tk.Frame(body)
+        holder.pack(fill='both', expand=True, side='left')
+        listbox = tk.Listbox(holder, selectmode='extended', font=('Consolas', 10), exportselection=False)
+        sy = ttk.Scrollbar(holder, orient='vertical', command=listbox.yview)
+        sx = ttk.Scrollbar(holder, orient='horizontal', command=listbox.xview)
+        listbox.configure(yscrollcommand=sy.set, xscrollcommand=sx.set)
+        listbox.grid(row=0, column=0, sticky='nsew')
+        sy.grid(row=0, column=1, sticky='ns')
+        sx.grid(row=1, column=0, sticky='ew')
+        holder.columnconfigure(0, weight=1)
+        holder.rowconfigure(0, weight=1)
+        for directory in initial:
+            listbox.insert('end', directory)
+
+        def entries():
+            return list(listbox.get(0, 'end'))
+
+        def replace(items, selected=None):
+            listbox.delete(0, 'end')
+            for item in items:
+                listbox.insert('end', item)
+            if selected is not None and 0 <= selected < len(items):
+                listbox.selection_set(selected)
+                listbox.see(selected)
+
+        def add():
+            directory = simpledialog.askstring('Add PATH directory', 'Linux directory:', parent=window)
+            if directory is None:
+                return
+            try:
+                value = normalize_directory(directory)
+            except ValueError as exc:
+                messagebox.showerror('PATH', str(exc), parent=window)
+                return
+            items = entries()
+            if value not in items:
+                items.append(value)
+            replace(items, items.index(value))
+
+        def remove():
+            indices = set(map(int, listbox.curselection()))
+            if indices:
+                replace([item for i, item in enumerate(entries()) if i not in indices])
+
+        def move(delta):
+            selected = list(map(int, listbox.curselection()))
+            if len(selected) != 1:
+                return
+            index = selected[0]
+            items = entries()
+            target = index + delta
+            if 0 <= target < len(items):
+                items[index], items[target] = items[target], items[index]
+                replace(items, target)
+
+        def reset():
+            items = list(original)
+            for item in component_path_directories(self.app.state):
+                if item not in items:
+                    items.append(item)
+            replace(items)
+
+        buttons = tk.Frame(body)
+        buttons.pack(side='right', fill='y', padx=(9, 0))
+        for title, command in [('Add', add), ('Remove', remove), ('Up', lambda: move(-1)),
+                               ('Down', lambda: move(1)), ('Reset', reset)]:
+            tk.Button(buttons, text=title, width=9, command=command).pack(pady=3)
+
+        footer = tk.Frame(window)
+        footer.pack(fill='x', padx=12, pady=(5, 12))
+        tk.Button(footer, text='Cancel', width=12, command=window.destroy).pack(side='right', padx=(6, 0))
+
+        def save():
+            try:
+                selected = normalize_directories(entries())
+                if not selected:
+                    raise ValueError('PATH cannot be empty.')
+            except ValueError as exc:
+                messagebox.showerror('PATH', str(exc), parent=window)
+                return
+            self.app.state['runtime_path_settings'] = new_path_settings(self.app.state, base_path, selected)
+            window.destroy()
+
+        tk.Button(footer, text='Save', width=12, bg='#48C9B0', command=save).pack(side='right')
+        window.bind('<Escape>', lambda event: window.destroy())
 
     def _selected_indices(self):
         indices = []

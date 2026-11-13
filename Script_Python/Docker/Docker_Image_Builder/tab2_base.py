@@ -12,6 +12,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 from project_state import effective_builder_image
+from runtime_path_config import active_settings, final_path_directories, split_path
 from build_artifacts import read_record
 from component_presets import suggested_destination
 from runtime_source_status import runtime_component_status
@@ -1246,6 +1247,16 @@ done
         if not image:
             messagebox.showerror('Save Docker TAR', 'The selected image has no Docker tag.', parent=self)
             return
+        if self._active_role == 'runtime' and image == str(self.app.state.get('base_image') or '').strip():
+            settings = active_settings(self.app.state)
+            if settings:
+                original = split_path(settings.get('original_path') or '')
+                selected = final_path_directories(self.app.state)
+                if selected != original and not messagebox.askyesno(
+                        'PATH changes not built',
+                        'The edited PATH is applied in Tab 6. Export the original image without these changes?',
+                        parent=self):
+                    return
         directory = str(self.app.state.get('export_image_dir') or '').strip()
         if not Path(directory).is_dir():
             directory = str(Path.cwd())

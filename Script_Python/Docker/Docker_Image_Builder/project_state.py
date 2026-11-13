@@ -86,6 +86,7 @@ class ProjectState(dict):
         "package_finder_platform": "linux/amd64",
         "package_finder_custom_image": "",
         "container_config": {},
+        "runtime_path_settings": {},
         "recognized_elements_database": "",
     }
 
