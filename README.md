@@ -134,7 +134,6 @@ Repositories may include:
 - R
 - Python
 - Bash
-- C / C++
 
 ## Contact
 
