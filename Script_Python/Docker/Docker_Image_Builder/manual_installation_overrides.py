@@ -216,7 +216,7 @@ class ManualOverrideDialog(tk.Toplevel):
                 control = ttk.Entry(editor, textvariable=var)
             control.grid(row=row, column=1, sticky='ew', pady=7, padx=5)
         tk.Label(self, text='Example: Java  |  Java runtime  |  17.0.12  |  /usr/java/jdk-17/bin/java\n'
-                           'This is your assertion, NOT a successful test. Actual execution checks remain separate in Tab 7.\n'
+                           'This is your assertion, NOT a successful test. Actual execution checks remain separate in Tab 8.\n'
                            'Overrides apply only to this image identity. Revisions may inherit them as unverified assertions.',
                  bg='#FFF2D9', fg='#7E5109', padx=10, pady=10, wraplength=840, justify='left').pack(fill='x', padx=14, pady=7)
         frame = tk.Frame(self, bg='#F0F5FA')

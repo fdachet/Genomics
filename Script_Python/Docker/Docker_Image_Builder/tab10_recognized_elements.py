@@ -90,7 +90,7 @@ class RecognizedElementsTab(tk.Frame):
         self.status = tk.StringVar(value='Loading recognized executable database...')
         self._sort_column = 'name'
         self._sort_reverse = False
-        tk.Label(self, text='10 — RECOGNIZED ELEMENTS DATABASE', bg='#34495E', fg='white',
+        tk.Label(self, text='11 — RECOGNIZED ELEMENTS DATABASE', bg='#34495E', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=17, pady=13).pack(fill='x')
         tk.Label(self, text='Editable recognition catalog: build commands, languages, package managers, Linux shared libraries, '
                  'build files and distributions. Docker image scans read release versions from the image. No package is installed by this tab. '

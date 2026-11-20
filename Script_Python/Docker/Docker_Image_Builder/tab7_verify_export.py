@@ -28,7 +28,7 @@ class ValidationTab(tk.Frame):
         self._image_id_checked = ''
         self._closed = False
         self._event_queue = queue.Queue()
-        tk.Label(self, text='7 — AUTOMATIC VERIFICATION / EXPORT', bg='#154360', fg='white',
+        tk.Label(self, text='8 — AUTOMATIC VERIFICATION / EXPORT', bg='#154360', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
         tk.Label(self, textvariable=self.shared_summary, bg='#EBF5FB', fg='#154360',
                  anchor='w', justify='left').pack(fill='x', padx=14, pady=(10, 3))
@@ -375,7 +375,7 @@ class ValidationTab(tk.Frame):
             return ''
         image_id = self._image_id(image)
         if not image_id:
-            messagebox.showerror('Docker image', 'Image ' + image + ' was not found in the local Docker engine. Complete the build in Tab 6, or load its exported TAR with docker load.', parent=self)
+            messagebox.showerror('Docker image', 'Image ' + image + ' was not found in the local Docker engine. Complete the build in Tab 7, or load its exported TAR with docker load.', parent=self)
             return ''
         registered = str(self.app.state.get('built_image', '') or '').strip()
         if registered != image:

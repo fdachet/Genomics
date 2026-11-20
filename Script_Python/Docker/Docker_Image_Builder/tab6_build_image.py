@@ -49,9 +49,9 @@ class BuildTab(tk.Frame):
         self._last_plan = None
         self._last_environment = None
         self._generation_issues = []
-        tk.Label(self, text='6 — BUILD COMPLETE DOCKER IMAGE', bg='#1E8449', fg='white',
+        tk.Label(self, text='7 — BUILD COMPLETE DOCKER IMAGE', bg='#1E8449', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
-        tk.Label(self, text='One action: assemble the runtime, binaries, Tab 4 compiled outputs and approved packages; save the complete Docker image as a named TAR; automatically use it as the new editable base. Source compilation remains in Tab 4.',
+        tk.Label(self, text='One action: assemble the runtime, binaries, Tab 5 compiled outputs and approved packages; save the complete Docker image as a named TAR; automatically use it as the new editable base. Source compilation remains in Tab 5.',
                  bg='#D5F5E3', fg='#145A32', anchor='w', wraplength=1250, padx=10, pady=9).pack(fill='x', padx=12, pady=(8, 4))
         tk.Label(self, textvariable=self.summary, bg='#E9F7EF', anchor='w', justify='left').pack(fill='x', padx=12, pady=8)
         form = tk.Frame(self, bg='#E9F7EF')
@@ -319,11 +319,11 @@ class BuildTab(tk.Frame):
             if env['config'][key]:
                 lines.append('  Minimum ' + language + ': ' + env['config'][key])
         if env['config']['pre_commands'] or env['config']['post_commands']:
-            lines.append('  Custom Linux setup commands will run during Tab 6 build.')
+            lines.append('  Custom Linux setup commands will run during Tab 7 build.')
         lines.extend('  Translate: ' + original + ' => ' + resolved for original, resolved in plan['translations'])
         if plan['target_java']:
             lines.append('  Java selection: ' + plan['selection_reason'])
-        lines.append('Detected application requirements are not installed automatically. You must select packages in Tab 3.')
+        lines.append('Detected application requirements are not installed automatically. You must select packages in Tab 4.')
         if not packages and not online_requests:
             lines.append('No OS packages are declared. This does not verify application dependencies or Java compatibility.')
         self.out.delete('1.0', 'end')
@@ -424,7 +424,7 @@ class BuildTab(tk.Frame):
         environment = self.app.state.get('environment_requirements') or {}
         environment_configured = any(str(value or '').strip() for key, value in environment.items() if key not in ('auto_detect', 'allow_custom_network'))
         if not components and not environment_configured and not removals and normalize_mode(state.get('build_mode')) == STRICT:
-            messagebox.showerror('Build', 'No enabled components or configured runtime environment. Add components or an environment in Tab 3.', parent=self)
+            messagebox.showerror('Build', 'No enabled components or configured runtime environment. Add components or an environment in Tab 4.', parent=self)
             return False
         mode = normalize_mode(state.get('build_mode'))
         manifest = []
@@ -445,7 +445,7 @@ class BuildTab(tk.Frame):
                         messagebox.showerror(
                             'Compilation required',
                             name + ': ' + str(detail) + '\n\n'
-                            'Compile every enabled source in Tab 4 before assembling an image.',
+                            'Compile every enabled source in Tab 5 before assembling an image.',
                             parent=self)
                         return False
                     self._check_binary_architecture(Path(record['artifact']), component)
@@ -479,7 +479,7 @@ class BuildTab(tk.Frame):
         try:
             online_requests = pending_online_requests(state, base)
             if online_requests and mode == ASSEMBLY:
-                raise ValueError('Online packages were selected in Tab 3. Change build mode from ASSEMBLY to PERMISSIVE or STRICT so they can be installed in the full image.')
+                raise ValueError('Online packages were selected in Tab 4. Change build mode from ASSEMBLY to PERMISSIVE or STRICT so they can be installed in the full image.')
             self._check_context(context, components)
             lines = [f'FROM {base} AS final', 'USER root', '']
             if mode != STRICT:
@@ -537,12 +537,12 @@ class BuildTab(tk.Frame):
             for index, request in enumerate(online_requests, start=1):
                 info = dict(request['info'])
                 if info.get('image') != base:
-                    raise ValueError('Online package request ' + str(index) + ' was prepared for another runtime. Clear and reselect its packages in Tab 3.')
+                    raise ValueError('Online package request ' + str(index) + ' was prepared for another runtime. Clear and reselect its packages in Tab 4.')
                 command = repository_install_command(
                     info, request['packages'], use_archive=request.get('use_archive', False),
                     allow_unverified=request.get('allow_unverified', False),
                     custom_command=request.get('custom_command', ''))
-                label = 'Tab 3 online runtime installation ' + str(index) + ': ' + (', '.join(request['packages']) or 'custom command')
+                label = 'Tab 4 online runtime installation ' + str(index) + ': ' + (', '.join(request['packages']) or 'custom command')
                 lines.extend(optional_lines(['RUN ' + command], label, True, mode))
                 checks = [shlex.quote(name) for name in request.get('verify_commands') or []]
                 if checks:
@@ -611,7 +611,7 @@ class BuildTab(tk.Frame):
                 issues.append('Dependency revision preview unavailable: ' + str(exc))
             unsatisfied = [x for x in projected_dependencies if x['status'] in ('MISSING', 'UNVERIFIED', 'UNRESOLVED', 'RECHECK', 'INCOMPATIBLE')]
             if unsatisfied:
-                issues.append(str(len(unsatisfied)) + ' dependencies require post-build verification or a substitute provider; see Tab 5.')
+                issues.append(str(len(unsatisfied)) + ' dependencies require post-build verification or a substitute provider; see Tab 6.')
             previous = parent_provenance(state)
             pending['os_packages'] = remove_deferred_packages(pending['os_packages'], removals)
             pending['removed_requests'] = [x['name'] for x in removals if x['kind'] == 'deferred']
@@ -717,7 +717,7 @@ class BuildTab(tk.Frame):
         self.status.set('REVISION: base is ' + image + '; next image is ' + new_tag)
         self.out.delete('1.0', 'end')
         self.out.insert('end', 'Original image retained locally: ' + image + '\nNew base image: ' + image +
-                        '\nNew image tag: ' + new_tag + '\nAdd or change components in Tab 3, then build again.\n')
+                        '\nNew image tag: ' + new_tag + '\nAdd or change components in Tab 4, then build again.\n')
         editor = getattr(self.app, 'components_tab', None)
         if editor is not None:
             try:
@@ -846,7 +846,7 @@ class BuildTab(tk.Frame):
                              and str(component.get('name') or '').casefold() in installed_names)]
         if len(remaining) != len(previous_components):
             state['components'] = remaining
-            self.out.insert('end', 'Installed binaries moved from pending Tab 3 additions to the runtime inventory: '
+            self.out.insert('end', 'Installed binaries moved from pending Tab 4 additions to the runtime inventory: '
                             + str(len(previous_components) - len(remaining)) + '\n')
         state.update({
             'runtime_install_receipt': receipt,
@@ -871,7 +871,7 @@ class BuildTab(tk.Frame):
                         'Old base deselected (its Docker image and archive are not deleted).\n'
                         'Next output tag: ' + str(state['image_name']) + '\n')
         self.out.see('end')
-        for name in ('project_tab', 'components_tab', 'sources_tab',
+        for name in ('project_tab', 'components_tab', 'edit_components_tab', 'sources_tab',
                      'runtime_tab', 'validation_tab', 'container_tab'):
             tab = getattr(self.app, name, None)
             refresh = getattr(tab, 'refresh_from_project_state', None)
@@ -906,7 +906,7 @@ class BuildTab(tk.Frame):
             record, reason = read_record(self.app.state, component)
             if record is None:
                 missing.append((str(component.get('name') or 'Unnamed source'),
-                                str(reason or 'No valid compiled output from Tab 4')))
+                                str(reason or 'No valid compiled output from Tab 5')))
         return missing
 
     def build(self):
@@ -920,7 +920,7 @@ class BuildTab(tk.Frame):
                 'Compile all sources first',
                 'The complete Docker image cannot be assembled while enabled source '
                 'components are not compiled. This rule also applies in PERMISSIVE mode.\n\n'
-                + details + '\n\nCompile these components in Tab 4, then retry.', parent=self)
+                + details + '\n\nCompile these components in Tab 5, then retry.', parent=self)
             return
         destination = self._choose_archive_for_build()
         if destination is None:
@@ -995,7 +995,7 @@ class BuildTab(tk.Frame):
                         log('Other requested OS packages already installed: ' + (', '.join(inspection['installed']) or 'none') + '\n')
                         log('Other requested OS packages needing installation or verification: ' + (', '.join(inspection['missing']) or 'none') + '\n')
                     else:
-                        log('No additional OS package requests outside Tab 3 online installation.\n')
+                        log('No additional OS package requests outside Tab 4 online installation.\n')
                 else:
                     inspection = {'installed': [], 'missing': packages, 'manager': plan['manager']}
                     if packages:
@@ -1114,7 +1114,7 @@ class BuildTab(tk.Frame):
                         if plan.get('target_java') is not None:
                             minimums.append(plan['target_java'])
                         if installed is None:
-                            issues.append('Final image JVM could not be verified; verify in Tab 7')
+                            issues.append('Final image JVM could not be verified; verify in Tab 8')
                             log('WARNING: Final Java runtime could not be queried.\n')
                         elif minimums and installed < max(minimums):
                             issues.append('Final Java ' + str(installed) + ' is older than required Java ' + str(max(minimums)))

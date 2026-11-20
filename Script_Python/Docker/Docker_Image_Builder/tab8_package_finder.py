@@ -51,7 +51,7 @@ class PackageFinderTab(tk.Frame):
         self.local_docker_images = {}
         self.sort_column = ''
         self.sort_descending = False
-        tk.Label(self, text='8 — FIND PRECOMPILED LINUX PACKAGES', bg='#2471A3', fg='white',
+        tk.Label(self, text='9 — FIND PRECOMPILED LINUX PACKAGES', bg='#2471A3', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=20, pady=15).pack(fill='x', padx=8, pady=(8, 6))
         tk.Label(self, text='Choose a downloaded Linux image or a Docker Hub release, search packages, then save the selected binary package or add it to the runtime/builder.',
                  bg='#EAF2F8', fg='#154360', anchor='w').pack(fill='x', padx=16)
@@ -775,7 +775,7 @@ class PackageFinderTab(tk.Frame):
                             'package_source_image': manifest['image'], 'manifest': manifest})
             self.app.state['package_finder_builder_installs'] = records
             self._append('BUILDER-ONLY IMAGE CREATED: ' + tag)
-            self._append('Tab 4 will compile with this image; the final runtime image remains unchanged.')
+            self._append('Tab 5 will compile with this image; the final runtime image remains unchanged.')
             self.refresh_from_project_state()
 
     def inspect_image(self):
@@ -1179,7 +1179,7 @@ class PackageFinderTab(tk.Frame):
             warning = ('The downloaded packages were built for:\n' + str(manifest.get('os') or manifest['image']) +
                        '\nSource image: ' + manifest['image'] + '\n\nSelected runtime image: ' + runtime +
                        '\n\nDifferent distributions, releases, or CPU architectures can make these packages incompatible. ' +
-                       'Tab 6 must independently validate installation. Add the packages anyway?')
+                       'Tab 7 must independently validate installation. Add the packages anyway?')
             if not messagebox.askyesno('Check distribution compatibility', warning, parent=self):
                 return
         try:
@@ -1198,7 +1198,7 @@ class PackageFinderTab(tk.Frame):
                                    'add_to_path': False, 'base_match': '', 'local_package_files': [str(path)]})
                 added += 1
             self.app.state['components'] = components
-            self._append('ADDED ' + str(added) + ' binary OS packages to Tab 3 for final-image installation in Tab 6.')
+            self._append('ADDED ' + str(added) + ' binary OS packages to Tab 4 for final-image installation in Tab 7.')
         except Exception as exc:
             messagebox.showerror('Package Finder', str(exc), parent=self)
 
@@ -1256,7 +1256,7 @@ class PackageFinderTab(tk.Frame):
                 raise RuntimeError('OFFLINE INSTALLATION STOPPED BEFORE DOCKER BUILD: required dependencies are missing:\n' +
                                    '\n'.join(row['package'] + ' needs ' + row['requirement'] +
                                              ' [' + row['status'] + ']' for row in preflight['missing']) +
-                                   '\n\nDownload the missing dependency DEB archives, then use Tab 3 > '
+                                   '\n\nDownload the missing dependency DEB archives, then use Tab 4 > '
                                    'Install local package into builder > Browse package file(s) to select the '
                                    'original package AND its dependencies together. Check dependencies before installing. '
                                    'A single package archive may not include its required dependencies.')
@@ -1301,5 +1301,5 @@ class PackageFinderTab(tk.Frame):
                            'build_deps': '', 'runtime_packages': '', 'output_rel': '', 'validation': '',
                            'add_to_path': False, 'base_match': '', 'local_package_files': []})
         self.app.state['components'] = components
-        self._append('Source archive added directly to Tab 3: ' + file)
-        self._append('Tab 4 extracts it inside Docker without Windows filesystem symlink restrictions.')
+        self._append('Source archive added directly to Tab 4: ' + file)
+        self._append('Tab 5 extracts it inside Docker without Windows filesystem symlink restrictions.')

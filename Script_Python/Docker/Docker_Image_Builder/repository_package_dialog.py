@@ -57,7 +57,7 @@ class RepositoryPackageInstallDialog(tk.Toplevel):
         tk.Label(entry, text='Linux package name(s) in the selected distribution:', bg='#E8F8F5',
                  font=('Segoe UI', 10, 'bold')).pack(anchor='w')
         tk.Entry(entry, textvariable=self.packages, font=('Consolas', 11)).pack(fill='x', pady=(5, 4))
-        tk.Label(entry, text='Separate package names with commas. Use Tab 8 to search the selected distribution repository and confirm the exact names.', bg='#E8F8F5',
+        tk.Label(entry, text='Separate package names with commas. Use Tab 9 to search the selected distribution repository and confirm the exact names.', bg='#E8F8F5',
                  fg='#21618C', anchor='w', wraplength=900).pack(fill='x')
         tk.Label(entry, text='Custom installation command (optional; leave blank for automatic installation):', bg='#E8F8F5',
                  font=('Segoe UI', 10, 'bold')).pack(anchor='w', pady=(9, 0))
@@ -82,8 +82,8 @@ class RepositoryPackageInstallDialog(tk.Toplevel):
         self.unverified_control = tk.Checkbutton(options, text='Allow packages with expired/unverified archive signatures (security risk)',
                                                 variable=self.allow_unverified, bg='#E8F8F5', fg='#922B21')
         self.unverified_control.pack(anchor='w')
-        tk.Label(options, text='Runtime packages are installed during assembly of the COMPLETE final image in Tab 6. '
-                 'Tab 3 does not create or export an intermediate TAR. Build-only packages remain exclusive to the builder. '
+        tk.Label(options, text='Runtime packages are installed during assembly of the COMPLETE final image in Tab 7. '
+                 'Tab 4 does not create or export an intermediate TAR. Build-only packages remain exclusive to the builder. '
                  'Internet access is requested for each installation, and archived packages may be insecure.',
                  bg='#FCF3CF', fg='#7D6608', justify='left', anchor='w',
                  wraplength=905, padx=8, pady=7).pack(fill='x', pady=8)
@@ -223,7 +223,7 @@ class RepositoryPackageInstallDialog(tk.Toplevel):
             except ValueError as exc:
                 messagebox.showerror('Invalid installation command', str(exc), parent=self)
                 return
-            request_description = ('Install the following packages DIRECTLY into the assembled final image in Tab 6:\n\n' +
+            request_description = ('Install the following packages DIRECTLY into the assembled final image in Tab 7:\n\n' +
                                    ('\n'.join(names) or '(custom installation command)') + '\n\n' +
                                    ('Custom command: ' + custom + '\n\n' if custom else '') +
                                    'Starting runtime: ' + self.source + '\n' +
@@ -331,7 +331,7 @@ class RepositoryPackageInstallDialog(tk.Toplevel):
                                         'New image: ' + result['installed_image'] + '\n' +
                                         ('Builder and runtime both use this image.' if both else
                                          'Only the selected ' + self.target_role + ' was updated.') +
-                                        '\nNo intermediate TAR created. The final image is exported in Tab 6.' +
+                                        '\nNo intermediate TAR created. The final image is exported in Tab 7.' +
                                         '\n\nReview packages in Tab 2.', parent=self)
                     finished = True
                 except Exception as exc:

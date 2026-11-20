@@ -49,6 +49,9 @@ class BaseTab(tk.Frame):
         self._auto_inspections = set()
         self._active_role = "runtime"
         self._image_export_busy = False
+        self._inventory_sort_column = None
+        self._inventory_sort_reverse = False
+        self._inventory_headings = {"type": "Type", "application": "Software / Command", "version": "Version", "path": "Location"}
 
         self.app.state.setdefault("runtime_base_archive", "")
         self.app.state.setdefault("builder_base_archive", "")
@@ -79,7 +82,7 @@ class BaseTab(tk.Frame):
             selection_note,
             text="Runtime is selected in Tab 0; the builder is selected in Tab 1. "
                  "A TAR is optional: Tab 2 inspects the CURRENT selected image, including binaries "
-                 "from earlier builds. New compiled outputs remain staged until assembled in Tab 6.",
+                 "from earlier builds. New compiled outputs remain staged until assembled in Tab 7.",
             bg="#D6EAF8", fg="#154360", justify="left", anchor="w", padx=10, pady=8,
         ).pack(side="left", fill="x", expand=True)
         selectors = tk.LabelFrame(
@@ -236,18 +239,20 @@ class BaseTab(tk.Frame):
         inventory_body.pack(fill="both", expand=True)
         inv_cols = ("type", "application", "version", "path")
         self.inventory_tree = ttk.Treeview(inventory_body, columns=inv_cols, show="headings", height=10, selectmode="extended")
-        self.inventory_tree.heading("type", text="Type")
-        self.inventory_tree.heading("application", text="Software / Command")
-        self.inventory_tree.heading("version", text="Version")
-        self.inventory_tree.heading("path", text="Location")
+        self.inventory_tree.heading("type", text="Type", command=lambda c="type": self._sort_inventory(c))
+        self.inventory_tree.heading("application", text="Software / Command", command=lambda c="application": self._sort_inventory(c))
+        self.inventory_tree.heading("version", text="Version", command=lambda c="version": self._sort_inventory(c))
+        self.inventory_tree.heading("path", text="Location", command=lambda c="path": self._sort_inventory(c))
         self.inventory_tree.column("type", width=90, anchor="w")
         self.inventory_tree.column("application", width=190, anchor="w")
         self.inventory_tree.column("version", width=160, anchor="w")
         self.inventory_tree.column("path", width=330, anchor="w")
         inventory_scroll = ttk.Scrollbar(inventory_body, orient="vertical", command=self.inventory_tree.yview)
-        self.inventory_tree.configure(yscrollcommand=inventory_scroll.set)
+        inventory_scroll_x = ttk.Scrollbar(inventory_body, orient="horizontal", command=self.inventory_tree.xview)
+        self.inventory_tree.configure(yscrollcommand=inventory_scroll.set, xscrollcommand=inventory_scroll_x.set)
         self.inventory_tree.grid(row=0, column=0, sticky="nsew")
         inventory_scroll.grid(row=0, column=1, sticky="ns")
+        inventory_scroll_x.grid(row=1, column=0, sticky="ew")
         inventory_body.rowconfigure(0, weight=1)
         inventory_body.columnconfigure(0, weight=1)
 
@@ -723,8 +728,34 @@ class BaseTab(tk.Frame):
                          "name": str(component.get("name") or filename),
                          "version": str(component.get("version") or record.get("version") or ""),
                          "path": "Planned: " + final_path + " (not in image; " +
-                                 ("build in Tab 6" if active else "currently disabled") + ") | Saved: " + str(record["artifact"])})
+                                 ("build in Tab 7" if active else "currently disabled") + ") | Saved: " + str(record["artifact"])})
         return rows
+
+    @staticmethod
+    def _inventory_natural_key(value):
+        parts = re.split(r'(\d+)', str(value or '').casefold())
+        return tuple((1, int(part)) if part.isdecimal() else (0, part) for part in parts)
+
+    def _sort_inventory(self, column):
+        if self._inventory_sort_column == column:
+            self._inventory_sort_reverse = not self._inventory_sort_reverse
+        else:
+            self._inventory_sort_column = column
+            self._inventory_sort_reverse = False
+        self._apply_inventory_sort()
+
+    def _apply_inventory_sort(self):
+        column = self._inventory_sort_column
+        for key, label in self._inventory_headings.items():
+            indicator = ' ▼' if self._inventory_sort_reverse else ' ▲'
+            self.inventory_tree.heading(key, text=label + (indicator if key == column else ''))
+        if not column:
+            return
+        rows = list(self.inventory_tree.get_children(''))
+        rows.sort(key=lambda iid: self._inventory_natural_key(self.inventory_tree.set(iid, column)),
+                  reverse=self._inventory_sort_reverse)
+        for index, iid in enumerate(rows):
+            self.inventory_tree.move(iid, '', index)
 
     def _populate_inventory_tree(self, inspection=None):
         self.inventory_tree.delete(*self.inventory_tree.get_children())
@@ -794,6 +825,7 @@ class BaseTab(tk.Frame):
             self.inventory_tree.insert("", "end", iid=f"inv{i}", values=(row["type"], row["name"], row["version"], row["path"]))
         if not rows:
             self.inventory_tree.insert("", "end", values=("", "<no matching software entries>", "", ""))
+        self._apply_inventory_sort()
 
     def _populate_compiled_outputs(self):
         state = self.app.state
@@ -821,7 +853,7 @@ class BaseTab(tk.Frame):
                 ready += int(active)
                 filename = Path(record['artifact']).name
                 destination = str(item.get('destination') or suggested_destination(item.get('kind'), name)).rstrip('/')
-                final_path = (destination + '/' + filename) if destination.startswith('/') else '(set destination in Tab 3)'
+                final_path = (destination + '/' + filename) if destination.startswith('/') else '(set destination in Tab 4)'
                 kind = 'Staged executable' if active else 'Disabled executable'
                 location = 'Final: ' + final_path + ' | Saved: ' + str(record['artifact'])
             else:
@@ -832,12 +864,13 @@ class BaseTab(tk.Frame):
                 visible.append(row)
         self.inventory_summary.set('Compiled source outputs — ' + str(in_runtime) + ' already present in the selected runtime image; '
                                    + str(unverified) + ' need runtime inspection; '
-                                   + str(ready) + ' ready to add in the NEXT Tab 6 build. '
+                                   + str(ready) + ' ready to add in the NEXT Tab 7 build. '
                                    'Select Show runtime to inspect executable files actually found in the image.')
         for index, row in enumerate(sorted(visible, key=lambda item: item[1].lower())):
             self.inventory_tree.insert('', 'end', iid='compiled' + str(index), values=row)
         if not visible:
             self.inventory_tree.insert('', 'end', values=('', '<no matching compiled source outputs>', '', ''))
+        self._apply_inventory_sort()
 
     def _extract_version_candidate(self, raw, returncode=None):
         lines = [re.sub(r"\s+", " ", x.strip()) for x in (raw or "").splitlines() if x.strip()]
@@ -1254,7 +1287,7 @@ done
                 selected = final_path_directories(self.app.state)
                 if selected != original and not messagebox.askyesno(
                         'PATH changes not built',
-                        'The edited PATH is applied in Tab 6. Export the original image without these changes?',
+                        'The edited PATH is applied in Tab 7. Export the original image without these changes?',
                         parent=self):
                     return
         directory = str(self.app.state.get('export_image_dir') or '').strip()

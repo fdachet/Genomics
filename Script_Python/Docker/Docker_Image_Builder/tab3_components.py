@@ -49,7 +49,7 @@ class ComponentsTab(tk.Frame):
 
         tk.Label(
             self,
-            text="3 — ADD COMPONENTS / DEPENDENCY RESOLUTION",
+            text="4 — ADD COMPONENT",
             bg="#117864",
             fg="white",
             font=("Segoe UI", 16, "bold"),
@@ -60,7 +60,7 @@ class ComponentsTab(tk.Frame):
 
         base_frame = tk.LabelFrame(
             self,
-            text=" Selected runtime base from Tab 1 ",
+            text=" Selected runtime base from Tab 0 ",
             bg="#E8F8F5",
             fg="#0E6655",
             font=("Segoe UI", 10, "bold"),
@@ -81,10 +81,8 @@ class ComponentsTab(tk.Frame):
         toolbar.pack(fill="x", padx=12, pady=10)
         tk.Button(toolbar, text="Add a local element", bg="#48C9B0",
                   command=lambda: self.component_dialog(None)).pack(side="left", padx=4)
-        tk.Button(toolbar, text="Edit an element", bg="#45B39D",
-                  command=self.edit_selected).pack(side="left", padx=4)
-        tk.Button(toolbar, text="Remove an element", bg="#138D75", fg="white",
-                  command=self.remove_selected).pack(side="left", padx=4)
+        tk.Button(toolbar, text="Edit / Remove", bg="#45B39D",
+                  command=self.open_editor_tab).pack(side="left", padx=4)
         tk.Button(toolbar, text="Install element from internet", bg="#76D7C4",
                   command=self.install_element_from_internet).pack(side="left", padx=4)
         tk.Button(toolbar, text="Edit image PATH", bg="#F4D03F",
@@ -186,7 +184,7 @@ class ComponentsTab(tk.Frame):
         self.tree.tag_configure("outdated", background="#FFF0CF")
         self.tree.tag_configure("failed", background="#FCE3E2")
         self.tree.tag_configure("notcompiled", background="#F9F5E6")
-        self.tree.bind("<Double-1>", lambda event: self.edit_selected())
+        self.tree.bind("<Double-1>", lambda event: self.open_editor_tab())
 
         self.compilation_summary = tk.StringVar(value="")
         tk.Label(self, textvariable=self.compilation_summary, bg="#D5F5E3", fg="#0E6655",
@@ -200,6 +198,16 @@ class ComponentsTab(tk.Frame):
         self.output.pack(fill="x", padx=12, pady=(4, 12))
 
         self.refresh()
+
+    def open_editor_tab(self):
+        edit_tab = getattr(self.app, 'edit_components_tab', None)
+        if edit_tab is None:
+            return
+        indices = self._selected_indices()
+        self.app.notebook.select(edit_tab)
+        edit_tab.refresh_from_project_state()
+        if len(indices) == 1:
+            edit_tab.select_project_index(indices[0])
 
     def _selected_local_package_files(self):
         files = []
@@ -564,7 +572,7 @@ class ComponentsTab(tk.Frame):
                                   and isinstance(packages.get('os'), list))
 
         if not tag:
-            self.base_summary.set("No runtime base has been selected in Tab 1.")
+            self.base_summary.set("No runtime base has been selected in Tab 0.")
             return
 
         self.base_summary.set(
@@ -875,7 +883,7 @@ class ComponentsTab(tk.Frame):
     def remove_selected(self):
         if 'already-present' in self.tree.selection():
             messagebox.showinfo('ALREADY PRESENT',
-                                'The binary is part of the existing image. Tab 3 does not remove it from the original image.', parent=self)
+                                'The binary is part of the existing image. Tab 4 does not remove it from the original image.', parent=self)
             return
         indices = self._selected_indices()
         selections = [self._visible_image_items[x] for x in self.tree.selection() if x in self._visible_image_items]
@@ -1235,7 +1243,7 @@ class ComponentsTab(tk.Frame):
             text=(
                 "Select an extracted source folder or a ZIP / TAR / TAR.GZ / TAR.XZ archive directly. "
                 "Archives are unpacked inside Docker, never into a Windows source folder. "
-                "Configure the build command, output, and required builder tools in Tab 4."
+                "Configure the build command, output, and required builder tools in Tab 5."
             ),
             bg="#D5F5E3", fg="#0B5345", anchor="w", justify="left",
             wraplength=960, padx=12, pady=8,
@@ -1257,7 +1265,7 @@ class ComponentsTab(tk.Frame):
         advanced_panel = tk.Frame(form, bg="#E8F8F5", highlightbackground="#B2DFDB", highlightthickness=1)
         depends_row, _ = row_entry(advanced_panel, "Other component dependencies:", "depends")
         runtime_row, _ = row_entry(advanced_panel, "Runtime packages:", "runtime_packages")
-        tk.Label(advanced_panel, text="Optional runtime requirements. Build-only packages are managed in Tab 4.",
+        tk.Label(advanced_panel, text="Optional runtime requirements. Build-only packages are managed in Tab 5.",
                  bg="#E8F8F5", fg="#566573", anchor="w").pack(fill="x", padx=14, pady=6)
 
         check_row = tk.Frame(form, bg="#E8F8F5")
@@ -1584,6 +1592,9 @@ class ComponentsTab(tk.Frame):
             self._duplicate_notice = None
             win.destroy()
             self.refresh()
+            editor_tab = getattr(self.app, "edit_components_tab", None)
+            if editor_tab is not None:
+                editor_tab.refresh_from_project_state()
             if open_build_tab and component["kind"].strip().lower() == "source":
                 sources_tab = getattr(self.app, "sources_tab", None)
                 notebook = getattr(self.app, "notebook", None)
@@ -1598,7 +1609,7 @@ class ComponentsTab(tk.Frame):
                   font=("Segoe UI", 10, "bold"), padx=12).pack(side="right", padx=5)
         tk.Button(footer, text="Cancel", command=win.destroy, padx=10).pack(side="right", padx=5)
         build_next_button = tk.Button(
-            footer, text="Save and open Tab 4 — Compile Sources",
+            footer, text="Save and open Tab 5 — Compile Sources",
             command=lambda: save(True), bg="#D35400", fg="white", padx=10,
         )
         build_next_button.pack(side="right", padx=5)
@@ -1612,8 +1623,9 @@ class ComponentsTab(tk.Frame):
 
         kind_var.trace_add("write", toggle_build_next)
         toggle_build_next()
-        tk.Label(footer, text="Build settings are edited and tested only in Tab 4.",
+        tk.Label(footer, text="Build settings are edited and tested only in Tab 5.",
                  bg="#D5F5E3", fg="#566573").pack(side="left")
+        return win
 
     def _browse_file(self, variable):
         path = filedialog.askopenfilename(parent=self)

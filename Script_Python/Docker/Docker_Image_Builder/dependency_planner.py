@@ -116,16 +116,16 @@ def plan_runtime_dependencies(state, base_java=None, manager=None):
         raise ValueError('Java runtime major version must be a number such as 8, 11, 17, or 21.')
     requested_java = max([*(version for _, version in explicit), *([int(configured_java)] if configured_java else [])], default=None)
     auto_package = None
-    selection_reason = 'Selected by user in Tab 3' if requested_java is not None else ''
+    selection_reason = 'Selected by user in Tab 4' if requested_java is not None else ''
     errors = [entry['name'] + ': ' + entry['error'] for entry in java if entry['error']]
     if minimum is not None and requested_java is not None and requested_java < minimum:
         errors.append('Selected Java ' + str(requested_java) + ' is below the detected Java ' + str(minimum) + '+ requirement. No additional package will be selected automatically.')
     if requested_java is not None and configured_java:
-        selection_reason = 'Java version requested in Language runtimes / Custom setup; select its OS package explicitly in Tab 3'
+        selection_reason = 'Java version requested in Language runtimes / Custom setup; select its OS package explicitly in Tab 4'
         if not explicit and (base_java is None or base_java < requested_java):
             errors.append('Java ' + str(requested_java) + '+ was requested, but no runtime OS package was selected. Search the selected distribution repository and choose a compatible package.')
     if minimum is not None and (base_java is None or base_java < minimum) and (requested_java is None or requested_java < minimum):
-        errors.append('Java ' + str(minimum) + '+ required by application bytecode. No compatible Java runtime was selected by the user. Add one manually in Tab 3 if desired.')
+        errors.append('Java ' + str(minimum) + '+ required by application bytecode. No compatible Java runtime was selected by the user. Add one manually in Tab 4 if desired.')
     auto_version = java_package_version(auto_package) if auto_package else None
     target = max((version for version in (requested_java, auto_version) if version is not None), default=None)
     install_now = state.get('build_mode') != 'assembly'
@@ -152,4 +152,4 @@ def evaluate_java_requirement(minimum, base_version, plan, verification_error=''
         return {'status': 'MISSING' if base_version is not None and base_version < minimum else 'UNRESOLVED', 'path': path}
     if base_version is not None:
         return {'status': 'MISSING', 'path': f'Base Java {base_version} is too old; Java {minimum}+ is required'}
-    return {'status': 'UNRESOLVED', 'path': 'Base JVM not verified. No Java package is selected automatically; choose one in Tab 3 if needed'}
+    return {'status': 'UNRESOLVED', 'path': 'Base JVM not verified. No Java package is selected automatically; choose one in Tab 4 if needed'}

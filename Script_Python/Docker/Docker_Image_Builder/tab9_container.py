@@ -12,6 +12,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from workflow_toolbar import add_more_menu
+from container_resource_diagnostics import ContainerResourceMonitor
 
 
 def command_examples(state, mount_point):
@@ -89,14 +90,14 @@ def is_managed_container(info):
 
 def docker_image_id(image):
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
-                            capture_output=True, text=True, errors='replace', timeout=90,
+                            capture_output=True, text=True, errors='replace', timeout=20,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     return result.stdout.strip() if result.returncode == 0 else ''
 
 
 def create_container_args(config):
     data = validate_config(config)
-    args = ['docker', 'create', '--pull', 'never', '--name', data['name'], '--label', MANAGED_LABEL + '=true']
+    args = ['docker', 'run', '--detach', '--pull', 'never', '--name', data['name'], '--label', MANAGED_LABEL + '=true']
     if data['mount_enabled']:
         mount = 'type=bind,source=' + data['host_folder'] + ',target=' + data['mount_point']
         if data['read_only']:
@@ -105,6 +106,15 @@ def create_container_args(config):
     args.extend(['--workdir', data['workdir'], '--network', 'bridge' if data['network'] else 'none',
                  '--entrypoint', '/bin/sh', data['image'], '-c', 'while :; do sleep 3600; done'])
     return args
+
+
+def docker_ids(category):
+    args = ['docker', 'container', 'ls', '--all', '--quiet', '--no-trunc'] if category == 'container' else ['docker', 'image', 'ls', '--all', '--quiet', '--no-trunc']
+    result = subprocess.run(args, capture_output=True, text=True, errors='replace', timeout=25,
+                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    if result.returncode:
+        raise RuntimeError((result.stderr or result.stdout or 'Docker inventory failed').strip())
+    return list(dict.fromkeys(line.strip() for line in result.stdout.splitlines() if line.strip()))
 
 
 def mount_error_guidance(error, source):
@@ -123,7 +133,7 @@ def mount_error_guidance(error, source):
 
 def inspect_container(name):
     process = subprocess.run(['docker', 'container', 'inspect', name], capture_output=True,
-                             text=True, errors='replace', timeout=90,
+                             text=True, errors='replace', timeout=20,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if process.returncode:
         return None
@@ -133,7 +143,7 @@ def inspect_container(name):
 
 def list_docker_images():
     process = subprocess.run(['docker', 'image', 'ls', '--format', '{{json .}}'], capture_output=True,
-                             text=True, errors='replace', timeout=90,
+                             text=True, errors='replace', timeout=20,
                              creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if process.returncode:
         raise RuntimeError((process.stderr or process.stdout or 'Unable to list images in Docker Desktop.').strip())
@@ -180,6 +190,11 @@ class ContainerTab(tk.Frame):
         self._session_image_tag = ''
         self.mount_enabled = tk.BooleanVar(value=True)
         self.status = tk.StringVar(value='Select an image or Docker TAR. The container will start automatically.')
+        self.stage = tk.StringVar(value='Ready')
+        self.elapsed = tk.StringVar(value='')
+        self.last_command = tk.StringVar(value='')
+        self._operation_started = None
+        self._resource_monitor = None
         self._render()
         self.refresh_from_project_state()
         self.after(100, self._drain)
@@ -187,10 +202,8 @@ class ContainerTab(tk.Frame):
     def _render(self):
         banner = tk.Frame(self, bg='#196A8D', padx=18, pady=13)
         banner.pack(fill='x', padx=3, pady=(3, 0))
-        tk.Label(banner, text='9 — RUN SOFTWARE INSIDE A DOCKER CONTAINER', bg='#196A8D',
+        tk.Label(banner, text='10 — RUN SOFTWARE INSIDE A DOCKER CONTAINER', bg='#196A8D',
                  fg='white', font=('Segoe UI', 16, 'bold')).pack(anchor='w')
-        tk.Label(self, text='Load a Docker image and open its full Linux terminal. Windows folders are accessible only when mounted.',
-                 bg='#D9EDF8', fg='#22536D', font=('Segoe UI', 10), anchor='w', padx=14, pady=9).pack(fill='x', padx=3)
 
         settings = tk.LabelFrame(self, text='Docker image, container and Windows folder mount',
                                  bg='#EAF3FA', fg='#22536D', padx=12, pady=10,
@@ -203,7 +216,7 @@ class ContainerTab(tk.Frame):
         image_actions.grid(row=1, column=1, columnspan=2, padx=2, pady=(0, 4), sticky='w')
         tk.Button(image_actions, text='From Tab 0 Runtime TAR', command=self.use_tab1_runtime,
                   bg='#68CBB0', font=('Segoe UI', 10, 'bold')).pack(side='left', padx=(0, 8))
-        tk.Button(image_actions, text='From Tab 6 Final Image', command=self.use_final_image,
+        tk.Button(image_actions, text='From Tab 7 Final Image', command=self.use_final_image,
                   bg='#ABDDE6').pack(side='left', padx=(0, 8))
         tk.Button(image_actions, text='Browse Docker Images', command=self.browse_images,
                   bg='#ABDDE6').pack(side='left', padx=(0, 8))
@@ -229,10 +242,16 @@ class ContainerTab(tk.Frame):
         controls = tk.Frame(self, bg='#EAF3FA')
         controls.pack(fill='x', padx=17, pady=7)
         self.start_button = self._button(controls, 'Start New Container', self.start_container, '#1D9D78')
-        self._button(controls, 'Open Runtime Container', lambda: self.use_tab1_runtime(open_terminal=True), '#68CBB0')
         self._button(controls, 'Open Container', self.open_terminal, '#78C7F0')
         self._button(controls, 'Stop + Remove Container and Image', self.stop_container, '#D88755')
         self._button(controls, 'Save Settings', self.save_settings, '#AED6F1')
+        self._button(controls, 'DELETE ALL Docker Containers + Images', self.delete_all_docker, '#E88B86')
+        resource_row = tk.Frame(self, bg='#EAF3FA')
+        resource_row.pack(fill='x', padx=17, pady=(0, 7))
+        self._button(resource_row, 'Container Resource Monitor', self.open_resource_monitor, '#F4D187')
+        tk.Label(resource_row,
+                 text='Live memory, CPU, Java, open files, PIDs, OOM events, disk space and filesystem inodes',
+                 bg='#EAF3FA', fg='#315D74', font=('Segoe UI', 9)).pack(side='left', padx=(2, 0))
         add_more_menu(controls, [
             ("Check container status", self.check_container),
             ("Diagnose Docker or Windows mount", self.diagnose_docker),
@@ -243,6 +262,14 @@ class ContainerTab(tk.Frame):
         status_box.pack(fill='x', padx=17)
         tk.Label(status_box, textvariable=self.status, bg='#D8EFF0', fg='#155B62',
                  font=('Segoe UI', 10, 'bold'), anchor='w', wraplength=1350).pack(fill='x')
+        tk.Label(status_box, textvariable=self.stage, bg='#D8EFF0', fg='#1E4D6A',
+                 font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', pady=(3, 0))
+        self.progress = ttk.Progressbar(status_box, mode='indeterminate', length=460)
+        self.progress.pack(fill='x', pady=(3, 1))
+        tk.Label(status_box, textvariable=self.elapsed, bg='#D8EFF0', fg='#315D74',
+                 anchor='w', font=('Segoe UI', 9)).pack(fill='x')
+        tk.Label(status_box, textvariable=self.last_command, bg='#D8EFF0', fg='#315D74',
+                 anchor='w', font=('Consolas', 9), wraplength=1350).pack(fill='x')
 
 
     def _field(self, parent, row, label, variable):
@@ -269,7 +296,7 @@ class ContainerTab(tk.Frame):
         def action():
             if runtime_tag:
                 check = subprocess.run(['docker', 'image', 'inspect', runtime_tag],
-                                       capture_output=True, text=True, errors='replace', timeout=90,
+                                       capture_output=True, text=True, errors='replace', timeout=20,
                                        creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
                 if check.returncode == 0:
                     self.events.put(('image_selected', runtime_tag, True, open_terminal, archive_name))
@@ -290,7 +317,7 @@ class ContainerTab(tk.Frame):
             self._source_tar_path = str(self.app.state.get('last_full_image_tar') or '')
             self.start_container(automatic=True)
         else:
-            messagebox.showwarning('Image', 'Build or select your final Docker image in Tab 6.', parent=self)
+            messagebox.showwarning('Image', 'Build or select your final Docker image in Tab 7.', parent=self)
 
     def browse_images(self):
         def action():
@@ -302,7 +329,7 @@ class ContainerTab(tk.Frame):
 
     def _show_image_picker(self, images):
         if not images:
-            messagebox.showinfo('Docker images', 'Docker Desktop has no tagged local images. Build one in Tab 6 or load a .tar archive.', parent=self)
+            messagebox.showinfo('Docker images', 'Docker Desktop has no tagged local images. Build one in Tab 7 or load a .tar archive.', parent=self)
             return
         window = tk.Toplevel(self)
         window.title('Select an image from Docker Desktop')
@@ -373,51 +400,33 @@ class ContainerTab(tk.Frame):
         if re.search(r'_with_(?:repository|local)_packages\.tar(?:\.gz)?$', archive.name, re.I):
             messagebox.showerror('Package-stage archive selected',
                     'This is an OLD package-stage TAR, not the complete application image.\n\n'
-                    'Build your full Docker image in Tab 6 and use its automatically exported *_FULL.tar instead.',
+                    'Build your full Docker image in Tab 7 and use its automatically exported *_FULL.tar instead.',
                     parent=self)
             return
         self._work('Load image archive: ' + archive.name,
                    lambda: self._load_tar_action(archive, source='manually selected'))
 
     def _load_tar_action(self, archive, expected_tag='', source='', open_terminal=False):
-        args = ['docker', 'load', '-i', str(archive)]
-        self.events.put(('log', '$ ' + subprocess.list2cmdline(args) + '\n'))
-        process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1,
-                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-        output = []
-        try:
-            for line in process.stdout:
-                output.append(line)
-                self.events.put(('log', line))
-            code = process.wait()
-        finally:
-            if process.stdout:
-                process.stdout.close()
-        self.events.put(('log', 'Docker load exit code: ' + str(code) + '\n'))
+        archive = Path(archive)
+        size_gb = archive.stat().st_size / (1024 ** 3)
+        self._stage('Import Docker image TAR — ' + archive.name + ' (' + format(size_gb, '.2f') + ' GiB)')
+        code, text_output = self._run_output(['docker', 'load', '-i', str(archive)], timeout=900)
         if code:
-            raise RuntimeError('Docker could not load this image archive (exit code ' + str(code) + ').')
-        text_output = ''.join(output)
-        tags = list(dict.fromkeys(match.strip() for match in re.findall(r'^Loaded image:\s*(.+)$',
-                                                                             text_output, flags=re.MULTILINE)))
-        image_ids = list(dict.fromkeys(match.strip() for match in re.findall(r'^Loaded image ID:\s*(.+)$',
-                                                                                  text_output, flags=re.MULTILINE)))
+            raise RuntimeError('Docker image import failed: ' + text_output[-1400:])
+        tags = list(dict.fromkeys(match.strip() for match in re.findall(r'^Loaded image:\s*(.+)$', text_output, flags=re.MULTILINE)))
+        image_ids = list(dict.fromkeys(match.strip() for match in re.findall(r'^Loaded image ID:\s*(.+)$', text_output, flags=re.MULTILINE)))
         selected = ''
-        if expected_tag:
-            check = subprocess.run(['docker', 'image', 'inspect', expected_tag],
-                                   capture_output=True, text=True, errors='replace', timeout=90,
-                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
-            if check.returncode == 0:
-                selected = expected_tag
+        if expected_tag and docker_image_id(expected_tag):
+            selected = expected_tag
         if not selected and len(tags) == 1:
             selected = tags[0]
         if not selected and not tags and len(image_ids) == 1:
             selected = image_ids[0]
         if selected:
             self.events.put(('image_selected', selected, True, open_terminal, str(archive)))
-            return 'IMAGE LOADED FROM ' + (source or 'TAR').upper() + ': ' + selected + ' | Starting container automatically.'
+            return 'IMAGE LOADED: ' + selected + ' | Starting fresh container.'
         self.events.put(('images', list_docker_images()))
-        return 'IMAGE LOADED: Multiple image tags found. Select the image to start automatically.'
+        return 'TAR IMPORTED: Select the desired image from the list.'
 
     def browse(self):
         initial = self.host_folder.get().strip()
@@ -495,12 +504,20 @@ class ContainerTab(tk.Frame):
         scrolly.config(command=output.yview)
         window.transient(self.winfo_toplevel())
 
+    def _stage(self, label):
+        self.events.put(('stage', label))
+        self.events.put(('log', label + '\n'))
+
     def _drain(self):
         try:
             while True:
                 item = self.events.get_nowait()
                 if item[0] == 'log':
                     self._append(item[1])
+                elif item[0] == 'stage':
+                    self.stage.set(item[1])
+                elif item[0] == 'command':
+                    self.last_command.set(item[1])
                 elif item[0] == 'status':
                     self.status.set(item[1])
                 elif item[0] == 'images':
@@ -526,6 +543,9 @@ class ContainerTab(tk.Frame):
                     messagebox.showerror('Docker container', item[1], parent=self)
                 elif item[0] == 'done':
                     self.busy = False
+                    self.progress.stop()
+                    self.elapsed.set('')
+                    self._operation_started = None
                     self.start_button.config(state='normal')
                     if self._pending_auto_start is not None:
                         open_terminal = self._pending_auto_start
@@ -536,14 +556,20 @@ class ContainerTab(tk.Frame):
                         self.after_idle(self.open_terminal)
         except queue.Empty:
             pass
+        if self.busy and self._operation_started is not None:
+            self.elapsed.set('Elapsed: ' + str(int(time.monotonic() - self._operation_started)) + ' seconds')
         if self.winfo_exists():
-            self.after(100, self._drain)
+            self.after(150, self._drain)
 
     def _work(self, label, action):
         if self.busy:
             messagebox.showinfo('Container', 'A Docker operation is already in progress.', parent=self)
             return
         self.busy = True
+        self._operation_started = time.monotonic()
+        self.progress.start(15)
+        self.stage.set(label)
+        self.last_command.set('')
         self.start_button.config(state='disabled')
         self.events.put(('log', '\n=== ' + label + ' ===\n'))
         self.events.put(('status', label + ' ...'))
@@ -553,66 +579,59 @@ class ContainerTab(tk.Frame):
                 result = action()
                 if result:
                     self.events.put(('status', str(result)))
+                    self.events.put(('stage', 'Completed'))
             except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
                 message = str(exc)
                 self.events.put(('log', 'ERROR: ' + message + '\n'))
                 self.events.put(('status', 'ERROR: ' + message[:220]))
+                self.events.put(('stage', 'Failed — view More tools > View operation details'))
                 self.events.put(('error', message))
             finally:
                 self.events.put(('done',))
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _run(self, args, timeout=180, check=True):
+    def _run_output(self, args, timeout=120, check=False):
         command = subprocess.list2cmdline(args)
+        self.events.put(('command', '$ ' + command))
         self.events.put(('log', '$ ' + command + '\n'))
-        self.events.put(('status', 'Docker: ' + ' '.join(args[1:3]) + ' ...'))
         process = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, errors='replace',
-                                   bufsize=1, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                                   creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self._active_process = process
-        output = ''
         started = time.monotonic()
+        last_update = -1
         try:
-            if timeout is None:
-                chunks = []
-                for line in process.stdout:
-                    chunks.append(line)
-                    self.events.put(('log', line))
-                output = ''.join(chunks)
-                code = process.wait()
-            else:
-                timeout = max(0.01, float(timeout))
-                while True:
-                    elapsed = time.monotonic() - started
-                    remaining = timeout - elapsed
-                    if remaining <= 0:
-                        process.kill()
-                        partial, _ = process.communicate()
-                        output = partial or output
-                        if output:
-                            self.events.put(('log', output))
-                        raise RuntimeError('Docker command timed out after ' + str(round(timeout, 1)) +
-                                           ' seconds: ' + command +
-                                           ('\nOutput: ' + output.strip()[-1800:] if output.strip() else '\nNo response from Docker.'))
-                    try:
-                        output, _ = process.communicate(timeout=min(10.0, remaining))
-                        code = process.returncode
-                        break
-                    except subprocess.TimeoutExpired:
-                        elapsed = time.monotonic() - started
-                        self.events.put(('status', 'Waiting for Docker (' + str(int(elapsed)) +
-                                         ' seconds): ' + ' '.join(args[1:3])))
-                if output:
-                    self.events.put(('log', output))
+            while True:
+                elapsed = time.monotonic() - started
+                if timeout is not None and elapsed >= timeout:
+                    process.kill()
+                    partial, _ = process.communicate()
+                    raise RuntimeError('Docker did not finish after ' + str(int(timeout)) + ' seconds.\n' +
+                                       command + ('\n' + (partial or '')[-1200:] if partial else ''))
+                try:
+                    output, _ = process.communicate(timeout=min(1.0, max(0.2, (timeout or 100000) - elapsed)))
+                    code = process.returncode
+                    break
+                except subprocess.TimeoutExpired:
+                    seconds = int(time.monotonic() - started)
+                    if seconds // 3 != last_update:
+                        last_update = seconds // 3
+                        self.events.put(('status', 'Docker is working: ' + args[1] + ' | ' + str(seconds) + ' sec elapsed'))
+            if output:
+                self.events.put(('log', output if output.endswith('\n') else output + '\n'))
+            self.events.put(('log', 'Exit code: ' + str(code) + '\n'))
+            if code and check:
+                raise RuntimeError('Docker command failed (' + str(code) + '): ' + command +
+                                   ('\n' + output[-1400:] if output else ''))
+            return code, output or ''
         finally:
             self._active_process = None
             if process.stdout:
                 process.stdout.close()
-        self.events.put(('log', 'Exit code: ' + str(code) + '\n'))
-        if code and check:
-            raise RuntimeError('Docker command returned exit code ' + str(code) + ': ' + command +
-                               ('\n' + output.strip()[-1800:] if output.strip() else ''))
+
+    def _run(self, args, timeout=120, check=True):
+        code, _ = self._run_output(args, timeout=timeout, check=check)
         return code
 
     def _archive_for(self, config):
@@ -639,9 +658,9 @@ class ContainerTab(tk.Frame):
         archive = self._archive_for(config)
         if not archive:
             raise RuntimeError('Docker image is not loaded and no saved TAR was found for ' + image +
-                               '. Select the TAR in Tab 9 to import it.')
-        self.events.put(('log', 'Loading image from TAR before creating the container: ' + archive + '\n'))
-        self._run(['docker', 'load', '-i', archive], timeout=1200)
+                               '. Select the TAR in Tab 10 to import it.')
+        self._stage('STEP 3/5 — Importing Docker image TAR: ' + Path(archive).name)
+        self._run(['docker', 'load', '-i', archive], timeout=900)
         image_id = docker_image_id(image)
         if not image_id:
             raise RuntimeError('The TAR loaded, but did not provide the selected image tag: ' + image +
@@ -669,14 +688,14 @@ class ContainerTab(tk.Frame):
         if not existing:
             return ''
         if not is_managed_container(existing):
-            raise RuntimeError('A container named ' + name + ' already exists but was not created by Tab 9. '
+            raise RuntimeError('A container named ' + name + ' already exists but was not created by Tab 10. '
                                'Choose another name or remove the unrelated container manually.')
         old_image = str((existing.get('Config') or {}).get('Image') or '').strip()
         old_id = str(existing.get('Image') or '').strip()
         if (existing.get('State') or {}).get('Status') == 'running':
             self._run(['docker', 'stop', '--time', '5', name], timeout=120)
         self._run(['docker', 'rm', name], timeout=120)
-        self.events.put(('log', 'Removed previous Tab 9 container: ' + name + '\n'))
+        self.events.put(('log', 'Removed previous Tab 10 container: ' + name + '\n'))
         if old_image and old_image != replacement_image:
             self.events.put(('log', self._remove_image_if_unused(old_image, old_id) + '\n'))
         return old_image
@@ -701,13 +720,19 @@ class ContainerTab(tk.Frame):
 
         def action():
             current = dict(config)
+            self._stage('STEP 1/5 — Checking previous container')
             self._remove_existing_session(current['name'], replacement_image=current['image'])
+            self._stage('STEP 2/5 — Checking the selected image')
             image_id = self._ensure_image_loaded(current)
+            self._stage('STEP 3/5 — Image ready')
+            self._stage('STEP 4/5 — Creating and starting the container')
             args = create_container_args(current)
-            self.events.put(('log', 'Creating a fresh container with the CURRENT Windows mount settings...\n'))
             try:
-                self._run(args, timeout=240)
-                self._run(['docker', 'start', current['name']], timeout=180)
+                self._run(args, timeout=55)
+                self._stage('STEP 5/5 — Verifying container status')
+                info = inspect_container(current['name'])
+                if not info or not (info.get('State') or {}).get('Running'):
+                    raise RuntimeError('Docker did not report a running container after startup.')
             except Exception as exc:
                 failed = inspect_container(current['name'])
                 if failed and is_managed_container(failed):
@@ -756,6 +781,21 @@ class ContainerTab(tk.Frame):
             return 'INTERACTIVE TERMINAL LAUNCHED: ' + name + ' | Shell: ' + shell
 
         self._work('Open container terminal', action)
+
+    def open_resource_monitor(self):
+        name = self.name.get().strip()
+        if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]*', name):
+            messagebox.showerror('Container resource monitor', 'Enter a valid container name.', parent=self)
+            return
+        existing = self._resource_monitor
+        if existing is not None and existing.winfo_exists():
+            if existing.name == name:
+                existing.lift()
+                existing.focus_force()
+                existing.refresh()
+                return
+            existing.close()
+        self._resource_monitor = ContainerResourceMonitor(self, name)
 
     def diagnose_docker(self):
         image = self.image.get().strip()
@@ -829,7 +869,7 @@ class ContainerTab(tk.Frame):
             existing = inspect_container(name)
             if existing:
                 if not is_managed_container(existing):
-                    raise RuntimeError('The container ' + name + ' was not created by Tab 9. No Docker resources were deleted.')
+                    raise RuntimeError('The container ' + name + ' was not created by Tab 10. No Docker resources were deleted.')
                 image_name = str((existing.get('Config') or {}).get('Image') or image).strip()
                 image_id = str(existing.get('Image') or '').strip()
                 if (existing.get('State') or {}).get('Status') == 'running':
@@ -844,6 +884,54 @@ class ContainerTab(tk.Frame):
             return 'CONTAINER STOPPED AND REMOVED: ' + name + ' | ' + cleanup + ' | Original TAR preserved.'
 
         self._work('Stop container, remove it and unload its Docker image', action)
+
+    def delete_all_docker(self):
+        if self.busy:
+            messagebox.showwarning('Docker cleanup', 'Finish the current Docker operation first.', parent=self)
+            return
+        warning = ('Stop and DELETE EVERY Docker Desktop container and EVERY locally stored Docker image?\n\n'
+                   'This includes containers and images created outside this application.\n'
+                   'Data stored only inside containers will be permanently lost.\n'
+                   'Saved Windows TAR files and Docker volumes will NOT be deleted.\n\n'
+                   'This cannot be undone without rebuilding or reloading the images.')
+        if not messagebox.askyesno('Delete ALL Docker containers and images', warning, icon='warning', parent=self):
+            return
+        from tkinter import simpledialog
+        confirmation = simpledialog.askstring('Confirm full Docker cleanup',
+            'Type DELETE ALL to stop and remove ALL containers and images:', parent=self)
+        if confirmation != 'DELETE ALL':
+            return
+
+        def action():
+            self._stage('STEP 1/4 — Finding all Docker Desktop containers')
+            containers = docker_ids('container')
+            self.events.put(('log', 'Containers found: ' + str(len(containers)) + '\n'))
+            self._stage('STEP 2/4 — Stopping and deleting ' + str(len(containers)) + ' containers')
+            for i in range(0, len(containers), 20):
+                batch = containers[i:i + 20]
+                self._run(['docker', 'container', 'rm', '--force'] + batch, timeout=90)
+                self._stage('Removed ' + str(min(i + len(batch), len(containers))) + '/' + str(len(containers)) + ' containers')
+            self._stage('STEP 3/4 — Finding all local Docker images')
+            images = docker_ids('image')
+            self.events.put(('log', 'Image IDs found: ' + str(len(images)) + '\n'))
+            self._stage('STEP 4/4 — Removing all Docker images')
+            if images:
+                self._run(['docker', 'image', 'prune', '--all', '--force'], timeout=240)
+            pending_images = docker_ids('image')
+            for i in range(0, len(pending_images), 20):
+                batch = pending_images[i:i + 20]
+                self._run(['docker', 'image', 'rm', '--force'] + batch, timeout=120)
+                self._stage('Removed ' + str(min(i + len(batch), len(pending_images))) + '/' + str(len(pending_images)) + ' remaining images')
+            remaining_containers = docker_ids('container')
+            remaining_images = docker_ids('image')
+            self.events.put(('session_stopped',))
+            if remaining_containers or remaining_images:
+                raise RuntimeError('Docker cleanup incomplete: ' + str(len(remaining_containers)) +
+                                   ' containers and ' + str(len(remaining_images)) + ' image IDs remain.')
+            return ('DOCKER CLEARED: ' + str(len(containers)) + ' containers and ' +
+                    str(len(images)) + ' images removed. TAR files and volumes preserved.')
+
+        self._work('Delete all Docker Desktop containers and images', action)
 
     def remove_container(self):
         self.stop_container()

@@ -47,7 +47,7 @@ class EnvironmentEditor(tk.Toplevel):
         form.bind('<Configure>', lambda event: canvas.configure(scrollregion=canvas.bbox('all')))
         canvas.bind('<Configure>', lambda event: canvas.itemconfigure(win, width=event.width))
         self.fields = {}
-        tk.Label(form, text='Enter minimum interpreter versions and one package per line. Blank fields impose no explicit requirement. Application files and folders remain registered in Tab 3.', bg='#EAF7F2', fg='#165D52', justify='left', wraplength=900).pack(fill='x', padx=18, pady=(14, 8))
+        tk.Label(form, text='Enter minimum interpreter versions and one package per line. Blank fields impose no explicit requirement. Application files and folders remain registered in Tab 4.', bg='#EAF7F2', fg='#165D52', justify='left', wraplength=900).pack(fill='x', padx=18, pady=(14, 8))
         for field, title, rows in LABELS:
             tk.Label(form, text=title, bg='#EAF7F2', font=('Segoe UI', 10, 'bold'), anchor='w').pack(fill='x', padx=18, pady=(12, 3))
             if rows == 1:

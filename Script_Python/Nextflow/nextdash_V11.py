@@ -17,7 +17,7 @@ from typing import Iterable
 RESERVED_WORDS = {"WAS", "WASG", "WASJ"}
 WIRE_TOKENS = {"|", "-"}
 RESERVED = RESERVED_WORDS | WIRE_TOKENS
-PROGRAM_TYPES = ("Linux executable", "Python 3", "Rscript", "Bash")
+PROGRAM_TYPES = ("Linux executable", "Python 3", "Rscript", "Bash", "Inline Bash")
 DATA_INPUT_MODES = ("Per-sample files", "Shared single resource")
 MODE_PER_SAMPLE = DATA_INPUT_MODES[0]
 MODE_SHARED = DATA_INPUT_MODES[1]
@@ -70,6 +70,9 @@ class ProgramDef:
     time: str = "24h"
     max_forks: int = 0
     publish_subdirectory: str = ""
+    additional_inputs: str = ""
+    additional_outputs: str = ""
+    shared_resources: str = ""
 
     def normalized_name(self) -> str:
         return self.name.strip() or f"Program_{self.program_id}"
@@ -86,14 +89,15 @@ class DataDef:
     sample_regex: str = ""
     output_template: str = ""
     input_mode: str = MODE_PER_SAMPLE
-    # Optional extension filter for root inputs selected from a folder/glob.
-    # Examples: .fastq.gz   or   .fastq,.fq,.fastq.gz,.fq.gz
+
+
     input_extensions: str = ""
     group_files_by_sample: bool = False
     expected_files_per_sample: int = 2
-    # Optional publish destination for generated data.  When blank, NextDash
-    # keeps the normal results/<Program>_out checkpoint destination.
+
+
     publish_directory: str = ""
+    local_scan_pattern: str = ""
 
     def normalized_output_template(self) -> str:
         return self.output_template.strip() or f"{{lineage}}.{sanitize_filename_component(self.label)}"
@@ -111,10 +115,10 @@ class WASJConfig:
     file_match_mode: str = WASJ_FILE_MATCH_MODES[0]
     join_key: str = ""
     difference_keys: list[str] = field(default_factory=list)
-    # difference_values[data_label][difference_key] = expected value
+
     difference_values: dict[str, dict[str, str]] = field(default_factory=dict)
 
-    # Compatibility alias for projects created before the UI terminology changed.
+
     @property
     def role_values(self) -> dict[str, dict[str, str]]:
         return self.difference_values
@@ -142,7 +146,7 @@ class ProgramOccurrence:
     col: int
     input_labels: list[str]
     output_label: str
-    barrier: str = "NONE"  # NONE, WAS, WASG, WASJ
+    barrier: str = "NONE"
     barrier_id: str = ""
     barrier_cells: list[tuple[int, int]] = field(default_factory=list)
     wait_labels: list[str] = field(default_factory=list)
@@ -190,9 +194,9 @@ class WASJPreview:
     issues: list[ValidationIssue]
 
 
-# ---------------------------------------------------------------------------
-# Basic helpers
-# ---------------------------------------------------------------------------
+
+
+
 
 def normalize_token(token: str) -> str:
     token = (token or "").strip()
@@ -223,6 +227,50 @@ def trim_grid(grid: list[list[str]]) -> list[list[str]]:
             if token:
                 last = max(last, idx)
     return [row[: max(4, last + 1)] for row in g]
+
+
+def program_token_id(token: str) -> str:
+    token = normalize_token(token)
+    match = re.fullmatch(r"([0-9]+)(?:_([A-Za-z][A-Za-z0-9_]*))?", token)
+    return match.group(1) if match else token
+
+
+def program_display_token(program_id: str, definition: ProgramDef | None = None) -> str:
+    if definition is None:
+        return str(program_id)
+    label = sanitize_identifier(definition.normalized_name())
+    return f"{program_id}_{label}"
+
+
+def parse_shared_resources(value: str) -> list[tuple[str, str]]:
+    resources = []
+    seen = set()
+    for line in str(value or "").replace("\r", "").replace("\n", ";").split(";"):
+        line = line.strip()
+        if not line:
+            continue
+        if "=" not in line:
+            raise NetDashError("Shared resources must use NAME=DATA_WORD.")
+        key, word = [part.strip() for part in line.split("=", 1)]
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", key):
+            raise NetDashError(f"Invalid shared-resource alias {key!r}.")
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", word):
+            raise NetDashError(f"Invalid shared data word {word!r}.")
+        if key.casefold() in seen or re.fullmatch(r"(?i)(input\d*|inputs|output\d*|sample|cpus|group|group_manifest)", key):
+            raise NetDashError(f"Duplicate or reserved shared-resource alias {key!r}.")
+        seen.add(key.casefold())
+        resources.append((key, word))
+    return resources
+
+
+def checked_shared_resources(pdef: ProgramDef, parsed: ParsedGrid, data_defs: dict[str, DataDef]) -> list[tuple[str, str]]:
+    declared = parse_shared_resources(pdef.shared_resources)
+    for alias, word in declared:
+        if word not in parsed.root_data:
+            raise NetDashError(f"Program {pdef.program_id}: shared resource {alias}={word} is not a root data word in Tab 1.")
+        if data_defs.get(word, DataDef(word)).normalized_input_mode() != MODE_SHARED:
+            raise NetDashError(f"Program {pdef.program_id}: {word} must have input mode 'Shared single resource' in Tab 2.")
+    return declared
 
 
 def token_kind(token: str) -> str:
@@ -294,6 +342,76 @@ def _protect_literal_braces(value: str) -> str:
 
 def _restore_literal_braces(value: str) -> str:
     return str(value).replace(_LITERAL_LBRACE,"{").replace(_LITERAL_RBRACE,"}")
+
+
+
+ASSET_TEMPLATE_TOKENS = ("{input}", "{input_stem}", "{sample}", "{lineage}")
+
+
+def parse_additional_inputs(value: str) -> list[tuple[str, str]]:
+    """Semicolon-delimited NAME=PATH rules; NAME placeholders are available to programs."""
+    result: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for item in str(value or "").replace("\r\n", "\n").replace("\n", ";").split(";"):
+        item = item.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise NetDashError("Additional inputs must be NAME=PATH entries separated by semicolons.")
+        key, path = (piece.strip() for piece in item.split("=", 1))
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", key):
+            raise NetDashError(f"Additional input name {key!r} is invalid.")
+        if key.casefold() in seen or re.fullmatch(r"(?i)(input\d*|inputs|output\d*|sample|cpus|group|group_manifest)", key):
+            raise NetDashError(f"Additional input name {key!r} is duplicated or reserved.")
+        seen.add(key.casefold())
+        if not path or any(char in path for char in ('"', "'", "`", "$", "\r", "\n", "\t", ";")):
+            raise NetDashError(f"Additional input {key}: path is missing or contains unsupported characters.")
+        remainder = path
+        for token in ASSET_TEMPLATE_TOKENS:
+            remainder = remainder.replace(token, "")
+        if "{" in remainder or "}" in remainder:
+            raise NetDashError(f"Additional input {key}: supported placeholders are {{input}}, {{input_stem}}, {{sample}}, {{lineage}}.")
+        result.append((key, path))
+    if len(result) > 64:
+        raise NetDashError("A program may declare at most 64 additional input files.")
+    return result
+
+
+def parse_additional_outputs(value: str) -> list[str]:
+    """Secondary output filename templates, separated by semicolons."""
+    values = [item.strip() for item in str(value or "").replace("\r\n", "\n").replace("\n", ";").split(";") if item.strip()]
+    if len(values) > 64:
+        raise NetDashError("A program may declare at most 64 additional output files.")
+    for value in values:
+        if value in (".", "..") or "/" in value or "\\" in value or any(ch in value for ch in ('"', "'", "`", "$", "\r", "\n", "\t", "*", "?", "[", "]")):
+            raise NetDashError(f"Additional output {value!r} must be one concrete filename template.")
+        residual=value
+        for token in ("{sample}", "{lineage}", "{data}", "{program}"):
+            residual=residual.replace(token, "")
+        if "{" in residual or "}" in residual:
+            raise NetDashError(f"Additional output {value!r} uses unsupported placeholders.")
+        if "{sample}" not in value and "{lineage}" not in value:
+            raise NetDashError(f"Additional output {value!r} must contain {{sample}} or {{lineage}} to avoid sample collisions.")
+    if len(values) != len(set(values)):
+        raise NetDashError("Additional output filename templates cannot be duplicated.")
+    return values
+
+
+def _asset_groovy_path_template(value: str, convert_windows: bool) -> str:
+    """Build a Groovy GString without permitting arbitrary interpolated code."""
+    value = windows_path_to_wsl(value) if convert_windows else value
+    value = value.replace("\\", "/")
+    for marker, expression in (
+        ("{input_stem}", "${input_file.toString().replaceFirst(/\\.[^./]+$/, '')}"),
+        ("{input}", "${input_file.toString()}"),
+        ("{sample}", "${sample_id.toString()}"),
+        ("{lineage}", "${lineage.toString()}"),
+    ):
+        value=value.replace(marker, f"__ND_{ASSET_TEMPLATE_TOKENS.index(marker)}__")
+    value=value.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$")
+    for i, expression in enumerate(("${input_file.toString()}", "${input_file.toString().replaceFirst(/\\.[^./]+$/, '')}", "${sample_id.toString()}", "${lineage.toString()}")):
+        value=value.replace(f"__ND_{i}__",expression)
+    return f'file("{value}", checkIfExists: true)'
 
 
 def validate_relative_subdirectory(value: str,field_name: str="publish subdirectory") -> str:
@@ -388,8 +506,8 @@ def read_tabtxt(path: Path) -> tuple[list[list[str]], bool]:
                 original = cell.strip()
                 row.append(normalize_token(original))
             rows.append(row)
-    # The second return value is retained for compatibility with older callers.
-    # A lone W is no longer rewritten to WASJ.
+
+
     return normalize_grid(rows or [[""]]), False
 
 
@@ -400,9 +518,9 @@ def write_tabtxt(path: Path, grid: list[list[str]]) -> None:
             handle.write("\t".join(row) + "\n")
 
 
-# ---------------------------------------------------------------------------
-# Sample metadata tables
-# ---------------------------------------------------------------------------
+
+
+
 
 def _sniff_delimiter(text: str, path: Path) -> str:
     if path.suffix.lower() == ".csv":
@@ -519,9 +637,9 @@ def _find_metadata_row(
     return matches[0], None
 
 
-# ---------------------------------------------------------------------------
-# Wires and grid parser
-# ---------------------------------------------------------------------------
+
+
+
 
 def _vertical_blocks(grid: list[list[str]], token: str) -> list[list[tuple[int, int]]]:
     rows = len(grid)
@@ -604,7 +722,7 @@ class _WireResolver:
                             candidates.append(self.resolve(rr, col))
                         except NetDashError:
                             pass
-                # Also allow a data word immediately to the left/right of any | cell.
+
                 for rr in range(top, bottom + 1):
                     for cc in (col - 1, col + 1):
                         if 0 <= cc < self.cols and token_kind(self.grid[rr][cc]) == "data":
@@ -644,7 +762,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
             if kind == "data":
                 data_labels.add(token)
             elif kind == "program":
-                program_ids.add(token)
+                program_ids.add(program_token_id(token))
             elif kind == "note":
                 note_cells.append((r, c))
 
@@ -678,7 +796,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
             for cell in block:
                 block_for_cell[cell] = (token, block)
 
-    # WAS validation: vertical block, 1+ sources, exactly one downstream program.
+
     for block in was_blocks:
         right_programs: list[tuple[int, int]] = []
         for r, c in block:
@@ -691,7 +809,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
         if len(right_programs) != 1:
             issues.append(ValidationIssue("ERROR", "A WAS block must have exactly one program immediately on its right. Other WAS rows are wait-only dependency signals.", tuple(block)))
 
-    # WASG: intentionally one stream only; a vertical block would be ambiguous.
+
     for block in wasg_blocks:
         if len(block) != 1:
             issues.append(ValidationIssue("ERROR", "WASG groups one stream into one cohort. Use one WASG cell, not a vertical WASG block.", tuple(block)))
@@ -703,7 +821,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
             if c + 1 >= cols or token_kind(g[r][c + 1]) != "program":
                 issues.append(ValidationIssue("ERROR", "WASG must have a program ID immediately on its right.", ((r, c),)))
 
-    # WASJ validation: 2+ streams, exactly one downstream program.
+
     for block in wasj_blocks:
         if len(block) < 2:
             issues.append(ValidationIssue("ERROR", "WASJ requires at least two vertically contiguous streams. Use WAS for one-stream synchronization.", tuple(block)))
@@ -727,9 +845,10 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
 
     for r in range(rows):
         for c in range(cols):
-            pid = g[r][c]
-            if token_kind(pid) != "program":
+            token = g[r][c]
+            if token_kind(token) != "program":
                 continue
+            pid = program_token_id(token)
             if c + 1 >= cols or token_kind(g[r][c + 1]) not in ("data", "wire_h", "wire_v"):
                 issues.append(ValidationIssue(
                     "ERROR",
@@ -798,7 +917,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
                     source = resolve_source(br, bc - 1) if bc > 0 else None
                     if source and source not in inputs:
                         inputs.append(source)
-                # first per-sample input becomes metadata/lineage carrier after the join
+
                 primary = inputs[0] if inputs else ""
 
             else:
@@ -848,7 +967,7 @@ def parse_grid(grid: list[list[str]]) -> tuple[ParsedGrid, list[ValidationIssue]
         note_cells=note_cells,
     )
 
-    # Cycle validation uses all true data dependencies, including wait-only WAS signals.
+
     deps: dict[str, set[str]] = {occ.occurrence_id: set() for occ in occurrences}
     for occ in occurrences:
         for label in occ.dependency_labels():
@@ -900,9 +1019,9 @@ def topological_occurrences(parsed: ParsedGrid) -> list[ProgramOccurrence]:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Definitions and metadata lineage
-# ---------------------------------------------------------------------------
+
+
+
 
 def is_shared_root(label: str, parsed: ParsedGrid, data_defs: dict[str, DataDef]) -> bool:
     return label in parsed.root_data and data_defs.get(label, DataDef(label)).normalized_input_mode() == MODE_SHARED
@@ -920,7 +1039,7 @@ def metadata_root_for_label(parsed: ParsedGrid, data_defs: dict[str, DataDef], l
         if producer is None:
             return None
         if producer.barrier == "WASG":
-            return None  # cohort output is no longer one biological sample
+            return None
         current = producer.primary_label or (producer.input_labels[0] if producer.input_labels else "")
         if not current:
             return None
@@ -959,9 +1078,9 @@ def _unknown_argument_placeholders(
     for token in re.findall(r"\{[^{}\r\n]+\}",args):
         if token in allowed:
             continue
-        # Canonically written numbered inputs/members receive a more specific
-        # arity/range error below. Non-canonical forms such as {input01} remain
-        # unknown because the renderer would not replace them.
+
+
+
         generic=re.fullmatch(r"\{input(\d+)\}",token)
         if generic and token==f"{{input{int(generic.group(1))}}}" and occ.barrier!="WASG":
             continue
@@ -1010,18 +1129,46 @@ def validate_definitions(
                 "ERROR",
                 f"Program {pid}: invalid time value {time_value!r}. Use a positive duration such as 30m, 2h, 24h, 2d, or 1d 6h.",
             ))
-        if not pdef.program_path.strip():
+        if not pdef.program_path.strip() and pdef.program_type != "Inline Bash":
             issues.append(ValidationIssue("ERROR", f"Program {pid}: program/script path is undefined."))
-        elif require_files and not Path(local_preview_path(pdef.program_path)).expanduser().is_file():
-            issues.append(ValidationIssue("ERROR", f"Program {pid}: file does not exist: {pdef.program_path}"))
+        elif require_files and pdef.program_type != "Inline Bash" and not Path(local_preview_path(pdef.program_path)).expanduser().is_file():
+            if os.name=="nt" and pdef.program_path.strip().startswith("/"):
+                issues.append(ValidationIssue("WARNING",f"Program {pid}: Linux program path is validated at runtime inside the container: {pdef.program_path}"))
+            else:
+                issues.append(ValidationIssue("ERROR",f"Program {pid}: file does not exist: {pdef.program_path}"))
         try:validate_relative_subdirectory(pdef.publish_subdirectory,"Program publish subdirectory")
         except NetDashError as exc:issues.append(ValidationIssue("ERROR",f"Program {pid}: {exc}."))
+        try:
+            extra_inputs=parse_additional_inputs(pdef.additional_inputs)
+            extras=parse_additional_outputs(pdef.additional_outputs)
+            shared_assets=checked_shared_resources(pdef,parsed,data_defs)
+            duplicated={key.casefold() for key,_ in extra_inputs} & {key.casefold() for key,_ in shared_assets}
+            if duplicated:
+                raise NetDashError(f"Program {pid}: asset aliases are duplicated across Additional Inputs and Shared Resources: {sorted(duplicated)}")
+        except NetDashError as exc:
+            issues.append(ValidationIssue("ERROR",f"Program {pid}: {exc}"))
+            extra_inputs=[];extras=[];shared_assets=[]
+        if any("{input}" in item or "{input_stem}" in item for _, item in extra_inputs):
+            for occ in [o for o in parsed.occurrences if o.program_id==pid]:
+                if occ.barrier not in ("NONE", "WAS") or len(occ.input_labels)!=1:
+                    issues.append(ValidationIssue("ERROR", f"Program {pid}: automatic paired inputs require a single per-sample input stream (normal or WAS).", ((occ.row,occ.col),)))
+        for occ in [o for o in parsed.occurrences if o.program_id==pid]:
+            if shared_assets and occ.barrier == "WASG":
+                issues.append(ValidationIssue("ERROR",f"Program {pid}: shared-resource inputs cannot be attached directly to a WASG cohort step.",((occ.row,occ.col),)))
+            if extra_inputs and (occ.barrier not in ("NONE", "WAS") or (occ.input_labels and occ.input_labels[0] in parsed.root_data and data_defs.get(occ.input_labels[0],DataDef(occ.input_labels[0])).group_files_by_sample)):
+                issues.append(ValidationIssue("ERROR",f"Program {pid}: additional file inputs currently require one ungrouped per-sample stream (normal or WAS).",((occ.row,occ.col),)))
+            if extras:
+                main_template=data_defs.get(occ.output_label,DataDef(occ.output_label)).normalized_output_template()
+                if main_template in extras:
+                    issues.append(ValidationIssue("ERROR",f"Program {pid}: secondary output duplicates the primary output template.",((occ.row,occ.col),)))
 
         for occ in [o for o in parsed.occurrences if o.program_id == pid]:
             args = _protect_literal_braces(pdef.arguments_template)
-            if "{output}" not in args:
-                issues.append(ValidationIssue("ERROR", f"Program {pid} arguments must contain {{output}}.", ((occ.row, occ.col),)))
-            for placeholder in _unknown_argument_placeholders(args,occ,parsed,data_defs):
+            if "{output}" not in args and "{output1}" not in args:
+                issues.append(ValidationIssue("ERROR", f"Program {pid} arguments must contain {{output}} or {{output1}}.", ((occ.row, occ.col),)))
+            known_asset_tokens={f"{{{key}}}" for key,_ in extra_inputs+shared_assets}
+            known_extra_outputs={f"{{output{i}}}" for i in range(1,len(extras)+2)}
+            for placeholder in sorted(set(_unknown_argument_placeholders(args,occ,parsed,data_defs))-known_asset_tokens-known_extra_outputs):
                 issues.append(ValidationIssue(
                     "ERROR",
                     f"Program {pid} contains unknown argument placeholder {placeholder}.",
@@ -1129,7 +1276,7 @@ def validate_definitions(
             if not ddef.input_pattern.strip():
                 issues.append(ValidationIssue("ERROR", f"Root data {label!r} must define an input folder/file/glob."))
             elif require_files:
-                files = discover_files(ddef.input_pattern, ddef.input_extensions)
+                files = discover_files(discovery_pattern(ddef), ddef.input_extensions)
                 if ddef.normalized_input_mode() == MODE_SHARED:
                     if len(files) != 1:
                         issues.append(ValidationIssue("ERROR", f"Shared data {label!r} must resolve to exactly one file; found {len(files)}."))
@@ -1192,9 +1339,33 @@ def validate_definitions(
     return issues
 
 
-# ---------------------------------------------------------------------------
-# Input scanning and WASJ pairing
-# ---------------------------------------------------------------------------
+
+
+
+
+def discovery_pattern(ddef: DataDef) -> str:
+    return (ddef.local_scan_pattern or "").strip() or ddef.input_pattern
+
+
+def manifest_input_path(ddef: DataDef, discovered_file: Path) -> str:
+    local=(ddef.local_scan_pattern or "").strip()
+    if not local:
+        return str(discovered_file)
+    runtime=ddef.input_pattern.strip().replace("\\", "/")
+    if not any(symbol in local for symbol in "*?["):
+        return runtime
+    local_path=local.replace("\\", "/")
+    start=min((local_path.index(symbol) for symbol in "*?[" if symbol in local_path),default=len(local_path))
+    local_dir=local_path[:start].rsplit("/",1)[0]
+    runtime_start=min((runtime.index(symbol) for symbol in "*?[" if symbol in runtime),default=len(runtime))
+    runtime_dir=runtime[:runtime_start].rsplit("/",1)[0]
+    found=str(discovered_file).replace("\\", "/")
+    prefix=local_dir.rstrip("/")+"/"
+    if os.path.normcase(found).casefold().startswith(os.path.normcase(prefix).casefold()):
+        suffix=found[len(prefix):]
+        return runtime_dir.rstrip("/")+"/"+suffix
+    raise NetDashError(f"Local scanned file {found!r} is outside its expected source folder {local_dir!r}.")
+
 
 def scan_root_inputs(
     parsed: ParsedGrid,
@@ -1209,13 +1380,13 @@ def scan_root_inputs(
         ddef = data_defs.get(label, DataDef(label))
         if not ddef.input_pattern.strip():
             continue
-        files = discover_files(ddef.input_pattern, ddef.input_extensions)
+        files = discover_files(discovery_pattern(ddef), ddef.input_extensions)
         if ddef.normalized_input_mode() == MODE_SHARED:
             if len(files) == 1:
                 rows.append({
                     "data_id": label,
                     "sample_id": "__SHARED__",
-                    "input_path": str(files[0]),
+                    "input_path": manifest_input_path(ddef,files[0]),
                     "lineage": sanitize_filename_component(label),
                     "metadata_json": "{}",
                 })
@@ -1239,7 +1410,7 @@ def scan_root_inputs(
             rows.append({
                 "data_id": label,
                 "sample_id": sid,
-                "input_path": str(path),
+                "input_path": manifest_input_path(ddef,path),
                 "lineage": sanitize_filename_component(sid) if ddef.group_files_by_sample else infer_lineage(str(path)),
                 "metadata_json": "{}",
             })
@@ -1251,8 +1422,8 @@ def scan_root_inputs(
             for sid,count in sorted(sample_counts.items()):
                 if count!=expected:issues.append(ValidationIssue("ERROR",f"Data {label!r}: grouped sample {sid!r} has {count} file(s); expected exactly {expected}."))
 
-    # Attach namespaced metadata for every WASJ configuration to the root stream
-    # whose metadata is carried by each WASJ input.
+
+
     for occ in parsed.wasj_occurrences():
         cfg = wasj_configs.get(occ.barrier_id)
         if not cfg or not cfg.sample_table_path.strip():
@@ -1424,7 +1595,7 @@ def preview_wasj(
                     tuple(occ.barrier_cells),
                 ))
 
-    # Two logical streams should not have exactly the same role signature.
+
     signatures: dict[tuple[str, ...], str] = {}
     for label in per_sample_labels:
         signature = tuple(inferred.get(label, {}).get(key, "") for key in diff_keys)
@@ -1469,7 +1640,7 @@ def preview_wasj(
                 row[label] = Path(item["input_path"]).name if item else "MISSING"
         preview_rows.append(row)
 
-    # Return inferred roles merged with explicit ones for GUI convenience.
+
     merged_roles: dict[str, dict[str, str]] = {}
     for label in per_sample_labels:
         merged_roles[label] = dict(inferred.get(label, {}))
@@ -1503,7 +1674,7 @@ def validate_wasj_configs(
     return issues
 
 
-# compatibility name used by v2 GUI/tests
+
 validate_join_sample_sets = validate_wasj_configs
 
 
@@ -1556,8 +1727,8 @@ def calculate_expected_published_outputs(
     try:
         ordered=topological_occurrences(parsed)
     except NetDashError:
-        # Structural validation already reports the dependency cycle. Filename
-        # preflight must not make the GUI's validation action crash as well.
+
+
         return publications,issues
     for occ in ordered:
         pdef=programs.get(occ.program_id,ProgramDef(occ.program_id))
@@ -1652,13 +1823,42 @@ def calculate_expected_published_outputs(
             else:
                 seen_destinations[destination_key]=publication
             publications.append(publication)
+            try:
+                secondary_templates=parse_additional_outputs(pdef.additional_outputs)
+            except NetDashError as exc:
+                issues.append(ValidationIssue("ERROR",f"Program {occ.program_id}: {exc}",((occ.row,occ.col),)))
+                secondary_templates=[]
+            for auxiliary_index, auxiliary_template in enumerate(secondary_templates, 2):
+                auxiliary_name=auxiliary_template
+                for token,value in {
+                    "{sample}":record.get("sample_id", ""),
+                    "{lineage}":record.get("lineage", ""),
+                    "{data}":sanitize_filename_component(out_def.label),
+                    "{program}":sanitize_filename_component(pdef.normalized_name()),
+                }.items():
+                    auxiliary_name=auxiliary_name.replace(token,str(value))
+                auxiliary_destination=f"{publish_directory}/{auxiliary_name}"
+                auxiliary_key=re.sub(r"/+","/",auxiliary_destination)
+                if os.name=="nt" or _uses_windows_path_semantics(auxiliary_destination):
+                    auxiliary_key=auxiliary_key.casefold()
+                entry={**publication,
+                    "data_id":f"{occ.output_label}:auxiliary_{auxiliary_index}",
+                    "filename":auxiliary_name,
+                    "destination":auxiliary_destination,
+                }
+                existing=seen_destinations.get(auxiliary_key)
+                if existing is not None:
+                    issues.append(ValidationIssue("ERROR",f"Published output collision: {auxiliary_destination!r} is produced by both {existing['source']} and {entry['source']}.",((occ.row,occ.col),)))
+                else:
+                    seen_destinations[auxiliary_key]=entry
+                publications.append(entry)
 
     return publications,issues
 
 
-# ---------------------------------------------------------------------------
-# Nextflow rendering
-# ---------------------------------------------------------------------------
+
+
+
 
 def _groovy_quote(value: str) -> str:
     return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
@@ -1674,13 +1874,20 @@ def _program_command(pdef: ProgramDef, convert_windows: bool) -> str:
     }.get(pdef.program_type, quoted)
 
 
+def _render_task_command(pdef: ProgramDef, args: str, convert_windows: bool) -> str:
+    """For Inline Bash, run the template as the task script, not bash -c with positional arguments."""
+    if pdef.program_type == "Inline Bash":
+        return args
+    return f"{_program_command(pdef, convert_windows)} {args}"
+
+
 def _process_name(occ: ProgramOccurrence, pdef: ProgramDef) -> str:
     return sanitize_identifier(f"P{occ.program_id}_{pdef.normalized_name()}_{occ.output_label}_R{occ.row+1}C{occ.col+1}", True)
 
 
 def _channel_name(label: str) -> str:
-    # Sanitizing alone is not injective (for example, "A-B" and "A B" both
-    # become "A_B"). A stable digest prevents silent channel aliasing.
+
+
     base = sanitize_identifier(label)[:48]
     digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:12]
     return f"ch_{base}_{digest}"
@@ -1747,10 +1954,10 @@ def _publish_dir_literal(
 
     runtime = windows_path_to_wsl(custom) if convert_windows else custom
     runtime = runtime.replace("\\", "/")
-    # Absolute paths and URI-like targets need no projectDir interpolation.
+
     if runtime.startswith("/") or re.match(r"^[A-Za-z]:/", runtime) or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", runtime):
         return _groovy_quote(runtime)
-    # Relative custom output directories are relative to the generated project.
+
     safe = validate_relative_subdirectory(runtime,"Published output folder").replace("$", "\\$").replace('"', '\\"')
     return f'"${{projectDir}}/{safe}"'
 
@@ -1767,13 +1974,25 @@ def _render_process(
     pname = _process_name(occ, pdef)
     max_forks = f"    maxForks {pdef.max_forks}\n" if pdef.max_forks > 0 else ""
     cache_value="true" if cache_enabled else "false"
+    additional_outputs = parse_additional_outputs(pdef.additional_outputs)
+    input_assets = parse_additional_inputs(pdef.additional_inputs)
+    shared_assets = checked_shared_resources(pdef,parsed,data_defs)
+    extra_output_exprs = [
+        _output_expr(DataDef(out_def.label,output_template=template),pdef,"group_id" if occ.barrier=="WASG" else "lineage1","group_id" if occ.barrier=="WASG" else "join_id" if occ.barrier=="WASJ" else "sample_id")
+        for template in additional_outputs
+    ]
+    extra_output_lines = "".join(f'    path("{expr}"), emit: auxiliary_{i}\n' for i,expr in enumerate(extra_output_exprs,2))
+    extra_file_assignments = "".join(f'    OUTPUT_FILE{i}="{expr}"\n' for i,expr in enumerate(extra_output_exprs,2))
+    extra_file_checks = "".join(f'    test -f "\\$OUTPUT_FILE{i}"\n' for i in range(2,len(extra_output_exprs)+2))
+    extra_stub_touches = "".join(f'    touch "{expr}"\n' for expr in extra_output_exprs)
 
     if occ.barrier == "WASG":
         label = occ.input_labels[0]
         lineage_var = "group_id"
         out_expr = _output_expr(out_def, pdef, lineage_var, "group_id")
         args = _replace_input_placeholders(_protect_literal_braces(pdef.arguments_template),occ,{})
-        args = args.replace("{output}", '"\\$OUTPUT_FILE"').replace("{sample}", '"\\$SAMPLE_ID"').replace("{cpus}", '"\\$TASK_CPUS"')
+        args = args.replace("{output}", '"\\$OUTPUT_FILE"').replace("{output1}", '"\\$OUTPUT_FILE"').replace("{sample}", '"\\$SAMPLE_ID"').replace("{cpus}", '"\\$TASK_CPUS"')
+        for i in range(2,len(extra_output_exprs)+2):args=args.replace(f"{{output{i}}}",f'"\\$OUTPUT_FILE{i}"')
         args = _restore_literal_braces(args)
         return f'''process {pname} {{
     cache {cache_value}
@@ -1790,7 +2009,7 @@ def _render_process(
 
     output:
     tuple val(group_id), path("{out_expr}"), val(group_id), val("{{}}"), emit: output_files
-
+{extra_output_lines}
     script:
     group_manifest_text = (0..<member_ids.size()).collect {{ i -> "${{member_ids[i]}}\\t${{input_files[i]}}" }}.join('\\n')
     """
@@ -1799,7 +2018,7 @@ def _render_process(
     TASK_CPUS="${{task.cpus}}"
     GROUP_MANIFEST="netdash_group_inputs.tsv"
     OUTPUT_FILE="{out_expr}"
-    cat > "\\$GROUP_MANIFEST" <<'NETDASH_GROUP_EOF'
+{extra_file_assignments}    cat > "\\$GROUP_MANIFEST" <<'NETDASH_GROUP_EOF'
 sample_id\tfile
 ${{group_manifest_text}}
 NETDASH_GROUP_EOF
@@ -1810,14 +2029,14 @@ NETDASH_GROUP_EOF
     echo "Group size   : ${{member_ids.size()}}"
     echo "Group list   : \\$GROUP_MANIFEST"
     echo "Output       : \\$OUTPUT_FILE"
-    {_program_command(pdef, convert_windows)} {args}
+    {_render_task_command(pdef, args, convert_windows)}
     test -f "\\$OUTPUT_FILE"
-    """
+{extra_file_checks}    """
 
     stub:
     """
     touch "{out_expr}"
-    """
+{extra_stub_touches}    """
 }}'''
 
     shared_labels = [label for label in occ.input_labels if is_shared_root(label, parsed, data_defs)]
@@ -1873,11 +2092,15 @@ NETDASH_GROUP_EOF
         sample_output_var = "join_id"
 
     else:
-        # Normal flow and WAS both feed one per-sample stream into the process.
+
         label = occ.input_labels[0]
         variables[label] = "INPUT1"
         path_binding="path(sample_input1, stageAs: 'netdash_input1/*')" if label in multi_file_labels else "path(sample_input1)"
-        input_lines.append(f"    tuple val(sample_id), {path_binding}, val(lineage1), val(meta_json1)")
+        asset_input_fields=", ".join(f"path(asset_file{i})" for i,_ in enumerate(input_assets,1))
+        input_lines.append(f"    tuple val(sample_id), {path_binding}, " + (asset_input_fields+", " if asset_input_fields else "")+"val(lineage1), val(meta_json1)")
+        for i,(key,_asset_path) in enumerate(input_assets,1):
+            setup_lines.append(f'    ASSET_{key}="${{asset_file{i}}}"')
+            echo_lines.append(f'    echo "Resource {key:<12}: \\$ASSET_{key}"')
         setup_lines += ['    SAMPLE_ID="${sample_id}"']
         if label in multi_file_labels:setup_lines += ['    INPUT1_FILES=( netdash_input1/* )','    INPUT1="\\${INPUT1_FILES[0]}"']
         else:setup_lines += ['    INPUT1="${sample_input1}"']
@@ -1887,9 +2110,16 @@ NETDASH_GROUP_EOF
         meta_var = "meta_json1"
         sample_output_var = "sample_id"
 
+    for idx,(key,word) in enumerate(shared_assets,1):
+        input_lines.append(f"    path(shared_asset{idx})")
+        setup_lines.append(f'    ASSET_{key}="${{shared_asset{idx}}}"')
+        echo_lines.append(f'    echo "Shared {key:<12}: \\$ASSET_{key} ({word})"')
+
     out_expr = _output_expr(out_def, pdef, lineage_var, sample_output_var)
     args = _replace_input_placeholders(_protect_literal_braces(pdef.arguments_template),occ,variables,multi_file_counts)
-    args = args.replace("{output}", '"\\$OUTPUT_FILE"').replace("{sample}", '"\\$SAMPLE_ID"').replace("{cpus}", '"\\$TASK_CPUS"')
+    args = args.replace("{output}", '"\\$OUTPUT_FILE"').replace("{output1}", '"\\$OUTPUT_FILE"').replace("{sample}", '"\\$SAMPLE_ID"').replace("{cpus}", '"\\$TASK_CPUS"')
+    for i in range(2,len(extra_output_exprs)+2):args=args.replace(f"{{output{i}}}",f'"\\$OUTPUT_FILE{i}"')
+    for key,_path in input_assets+shared_assets:args=args.replace(f"{{{key}}}",f'"\\$ASSET_{key}"')
     args = _restore_literal_braces(args)
 
     return f'''process {pname} {{
@@ -1907,25 +2137,25 @@ NETDASH_GROUP_EOF
 
     output:
     tuple val({sample_output_var}), path("{out_expr}"), val({lineage_var}), val({meta_var}), emit: output_files
-
+{extra_output_lines}
     script:
     """
     set -euo pipefail
 {chr(10).join(setup_lines)}
     OUTPUT_FILE="{out_expr}"
-    echo "Program      : {_bash_double_quote_text(pdef.normalized_name())} (ID {pdef.program_id})"
+{extra_file_assignments}    echo "Program      : {_bash_double_quote_text(pdef.normalized_name())} (ID {pdef.program_id})"
     echo "Barrier      : {occ.barrier}"
     echo "Sample/Join  : \\$SAMPLE_ID"
 {chr(10).join(echo_lines)}
     echo "Output       : \\$OUTPUT_FILE"
-    {_program_command(pdef, convert_windows)} {args}
+    {_render_task_command(pdef, args, convert_windows)}
     test -f "\\$OUTPUT_FILE"
-    """
+{extra_file_checks}    """
 
     stub:
     """
     touch "{out_expr}"
-    """
+{extra_stub_touches}    """
 }}'''
 
 
@@ -2066,9 +2296,9 @@ def render_main_nf(
             source_label = occ.input_labels[0]
             source = _channel_name(source_label)
             if is_shared_root(source_label, parsed, data_defs):
-                # Shared roots are Path values when used as supplemental WASJ
-                # inputs. Adapt a shared-only normal process to the standard
-                # four-field record carried by downstream NextDash processes.
+
+
+
                 adapter = f"shared_record_{sanitize_identifier(occ.occurrence_id)}"
                 record_id = sanitize_filename_component(source_label)
                 workflow += [
@@ -2106,7 +2336,7 @@ def render_main_nf(
             ]
             call_args = [grouped]
 
-        else:  # WASJ
+        else:
             cfg = wasj_configs[occ.barrier_id]
             sample_labels = [label for label in occ.input_labels if not is_shared_root(label, parsed, data_defs)]
             shared_labels = [label for label in occ.input_labels if is_shared_root(label, parsed, data_defs)]
@@ -2146,6 +2376,18 @@ def render_main_nf(
                 joined = out
             call_args = [joined] + [_channel_name(label) for label in shared_labels]
 
+        input_assets=parse_additional_inputs(pdef.additional_inputs)
+        if input_assets:
+            prepared=f"resources_{sanitize_identifier(occ.occurrence_id)}"
+            mapped_assets=[_asset_groovy_path_template(path_template,convert_windows_paths) for _name,path_template in input_assets]
+            workflow += [
+                f"    {prepared} = {call_args[0]}.map {{ sample_id, input_file, lineage, metadata_json ->",
+                "        tuple(sample_id, input_file, " + ", ".join(mapped_assets) + ", lineage, metadata_json)",
+                "    }",
+                "",
+            ]
+            call_args=[prepared]
+        call_args += [_channel_name(word) for _alias,word in checked_shared_resources(pdef,parsed,data_defs)]
         workflow += [
             f"    {pname}({', '.join(call_args)})",
             f"    {_channel_name(occ.output_label)} = {pname}.out.output_files",
@@ -2159,17 +2401,6 @@ def render_main_nf(
         workflow.append(f'    {_channel_name(label)}.view {{ item -> "FINAL {label}: ${{item[0]}} -> ${{item[1]}}" }}')
 
     return f'''nextflow.enable.dsl=2
-
-
-/*
- * Generated by NextDash v8.0.
- *
- * WAS  = wait for all participating streams, then release the primary stream
- *        sample-by-sample again.
- * WASG = wait for all samples in one stream, group them into one cohort task.
- * WASJ = wait for all participating streams, match by configured Join key,
- *        emit one matched tuple per Join-key value.
- */
 
 params.input_manifest = "${{projectDir}}/input_manifest.tsv"
 params.outdir = "${{projectDir}}/{results_directory}"
@@ -2191,9 +2422,9 @@ def _plain_tsv_field(value: object, column: str) -> str:
 
 
 def render_manifest_tsv(rows: list[dict[str, str]], convert_windows_paths: bool = True) -> str:
-    # Nextflow splitCsv(sep: '\t') does not decode RFC-CSV doubled quotes in a
-    # JSON-valued TSV field. Emit plain tab-separated fields instead; compact
-    # JSON contains escaped control characters, not literal tabs/newlines.
+
+
+
     headers = ["data_id", "sample_id", "input_path", "lineage", "metadata_json"]
     lines = ["\t".join(headers)]
     for row in rows:
@@ -2218,6 +2449,8 @@ def render_definition_summary(
             f"{pid}: {p.normalized_name()}",
             f"    path: {p.program_path or '(undefined)'}",
             f"    arguments: {p.arguments_template}",
+            f"    additional inputs: {p.additional_inputs or '(none)'}",
+            f"    additional outputs: {p.additional_outputs or '(none)'}",
             f"    barriers: {', '.join(sorted({o.barrier for o in uses})) or 'none'}",
             "",
         ]
@@ -2250,6 +2483,20 @@ def render_definition_summary(
     return "\n".join(lines)
 
 
+def render_routing_tsv(parsed: ParsedGrid, programs: dict[str, ProgramDef], data_defs: dict[str, DataDef]) -> str:
+    stream=io.StringIO()
+    writer=csv.writer(stream,delimiter="\t",lineterminator="\n")
+    writer.writerow(["program_id","program_name","input_data_words","output_data_word","output_filename_template","published_folder","next_programs","shared_resource_aliases","auxiliary_output_templates"])
+    for occ in topological_occurrences(parsed):
+        p=programs[occ.program_id]
+        output=data_defs[occ.output_label]
+        consumers=[x for x in parsed.occurrences if occ.output_label in x.dependency_labels()]
+        next_ids=",".join(f"{x.program_id}_{programs[x.program_id].normalized_name()}" for x in consumers)
+        shared=";".join(f"{alias}={word}" for alias,word in parse_shared_resources(p.shared_resources))
+        writer.writerow([occ.program_id,p.normalized_name(),",".join(occ.input_labels),occ.output_label,output.normalized_output_template(),output.publish_directory or p.normalized_publish_dir(),next_ids,shared,";".join(parse_additional_outputs(p.additional_outputs))])
+    return stream.getvalue()
+
+
 def save_project(
     output_directory: Path,
     grid: list[list[str]],
@@ -2280,6 +2527,7 @@ def save_project(
         output_directory / "input_manifest.tsv",
         output_directory / "NextDash.tabtxt",
         output_directory / "DEFINITIONS.txt",
+        output_directory / "ROUTING.tsv",
     ]
     if not overwrite:
         existing = [p for p in targets if p.exists()]
@@ -2292,12 +2540,13 @@ def save_project(
     (output_directory / "input_manifest.tsv").write_text(render_manifest_tsv(manifest_rows, convert_windows_paths), encoding="utf-8")
     write_tabtxt(output_directory / "NextDash.tabtxt", grid)
     (output_directory / "DEFINITIONS.txt").write_text(render_definition_summary(parsed, programs, data_defs, wasj_configs), encoding="utf-8")
+    (output_directory / "ROUTING.tsv").write_text(render_routing_tsv(parsed, programs, data_defs),encoding="utf-8")
     return output_directory
 
 
-# ---------------------------------------------------------------------------
-# Standalone Tk GUI
-# ---------------------------------------------------------------------------
+
+
+
 
 import json
 import os
@@ -2312,7 +2561,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 
-# Visual language
+
 C_BLANK = "#FFFFFF"
 C_DATA = "#DCEEFF"
 C_PROGRAM = "#EADCF8"
@@ -2346,11 +2595,12 @@ C_BUTTON_GENERATE = "#168A45"
 
 
 class SpreadsheetGrid(ttk.Frame):
-    def __init__(self, parent, rows=8, cols=12, on_change=None):
+    def __init__(self, parent, rows=8, cols=12, on_change=None, on_select=None):
         super().__init__(parent)
         self.rows = rows
         self.cols = cols
         self.on_change = on_change
+        self.on_select = on_select
         self.vars: list[list[tk.StringVar]] = []
         self.entries: list[list[tk.Entry]] = []
         self.active_cell: tuple[int, int] | None = None
@@ -2396,14 +2646,14 @@ class SpreadsheetGrid(ttk.Frame):
         self.entries = []
         ttk.Label(self.inner, text="", width=5).grid(row=0, column=0, sticky="nsew")
         for c in range(self.cols):
-            ttk.Label(self.inner, text=f"C{c+1}", anchor="center", width=16).grid(row=0, column=c+1, sticky="nsew", padx=1, pady=1)
+            ttk.Label(self.inner, text=f"C{c+1}", anchor="center", width=27).grid(row=0, column=c+1, sticky="nsew", padx=1, pady=1)
         for r in range(self.rows):
             ttk.Label(self.inner, text=f"R{r+1}", anchor="center", width=5).grid(row=r+1, column=0, sticky="nsew", padx=1, pady=1)
             row_vars, row_entries = [], []
             for c in range(self.cols):
                 value = data[r][c] if r < len(data) and c < len(data[r]) else ""
                 var = tk.StringVar(value=value)
-                ent = tk.Entry(self.inner, textvariable=var, width=16, justify="center", relief="solid", bd=1, fg=C_TEXT)
+                ent = tk.Entry(self.inner, textvariable=var, width=27, justify="center", relief="solid", bd=1, fg=C_TEXT)
                 ent.grid(row=r+1, column=c+1, sticky="nsew", padx=1, pady=1, ipady=6)
                 ent.configure(bg=self._cell_color(value))
                 ent.bind("<FocusIn>", lambda _e, rr=r, cc=c: self._activate(rr, cc))
@@ -2415,6 +2665,8 @@ class SpreadsheetGrid(ttk.Frame):
 
     def _activate(self, row, col):
         self.active_cell = (row, col)
+        if self.on_select:
+            self.on_select(row,col)
 
     def _edited(self, row, col):
         self.entries[row][col].configure(bg=self._cell_color(self.vars[row][col].get()))
@@ -2431,6 +2683,17 @@ class SpreadsheetGrid(ttk.Frame):
         self._build(grid)
         if self.on_change:
             self.on_change()
+
+    def refresh_program_labels(self, programs: dict[str, ProgramDef]):
+        for r, row in enumerate(self.vars):
+            for c, variable in enumerate(row):
+                value=variable.get().strip()
+                if token_kind(value)!="program":
+                    continue
+                pid=program_token_id(value)
+                expected=program_display_token(pid, programs.get(pid))
+                if value!=expected:
+                    variable.set(expected)
 
     def apply_data_flow_colors(self, serial_labels: set[str], shared_labels: set[str]):
         """Apply semantic flow colors after the application has parsed the grid."""
@@ -2479,7 +2742,7 @@ class SpreadsheetGrid(ttk.Frame):
 class NetDashApp:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("NextDash v8 → Nextflow Generator")
+        self.root.title("NextDash v11 → Nextflow Generator")
         self.root.geometry("1720x1020")
         self.root.minsize(1250, 780)
 
@@ -2494,6 +2757,8 @@ class NetDashApp:
         self.sample_table_headers: list[str] = []
         self._loading_program_form = False
         self._loading_data_form = False
+        self._tab2_sorts = {"program": (None, False), "data": (None, False)}
+        self._program_multiline_widgets = {}
 
         self.output_dir_var = tk.StringVar(value=str(Path.cwd() / "generated_nextdash_pipeline"))
         self.results_var = tk.StringVar(value="results")
@@ -2522,9 +2787,9 @@ class NetDashApp:
         self.root.bind("<Control-o>", lambda _e: self.load_grid())
         self.root.bind("<Control-s>", lambda _e: self.save_grid())
 
-    # ------------------------------------------------------------------
-    # Header and tabs
-    # ------------------------------------------------------------------
+
+
+
     def _add_colored_tab(self, tab, text: str, color: str):
         marker = tk.PhotoImage(width=14, height=14)
         marker.put(color, to=(0, 0, 14, 14))
@@ -2550,12 +2815,7 @@ class NetDashApp:
 
     def _build_header(self):
         hdr = ttk.Frame(self.root, padding=8); hdr.pack(fill="x")
-        ttk.Label(hdr, text="NextDash. Letter start a data stream, Number start a program", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
-        ttk.Label(hdr, text=(
-            "WAS = wait all participating streams, then release the primary samples individually.   "
-            "WASG = wait all samples + GROUP into one cohort task.   "
-            "WASJ = wait all streams + JOIN by metadata key, then continue one matched group per Join key."
-        ), wraplength=1650, justify="left").pack(anchor="w", pady=(2, 4))
+        ttk.Label(hdr, text="NextDash v11 — Workflow", font=("TkDefaultFont", 12, "bold")).pack(anchor="w")
         leg = tk.Frame(hdr, bg="#F7F9FC"); leg.pack(fill="x")
         for txt, bg in [
             ("ROOT DATA", C_DATA), ("SHARED RESOURCE", C_SHARED), ("PROGRAM", C_PROGRAM),
@@ -2563,12 +2823,7 @@ class NetDashApp:
             ("NOTE #", C_NOTE), ("ERROR", C_ERROR),
         ]:
             tk.Label(leg, text=txt, bg=bg, fg=C_TEXT, padx=8, pady=3, relief="solid", bd=1).pack(side="left", padx=(0, 5))
-        ttk.Label(
-            hdr,
-            text="Blue = per-sample data that can run in parallel. Light green = a cohort/serial flow after WASG. Teal = a shared root resource, such as one reference FASTA, reused by multiple tasks.",
-            wraplength=1650,
-            justify="left",
-        ).pack(anchor="w", pady=(4, 0))
+
 
     def _build_grid_tab(self):
         tab = ttk.Frame(self.notebook, padding=8); self._add_colored_tab(tab, "1 — Workflow spreadsheet", C_TAB_WORKFLOW)
@@ -2597,13 +2852,40 @@ class NetDashApp:
             ("Insert |", lambda: self.sheet.set_active_value("|")),
             ("Insert -", lambda: self.sheet.set_active_value("-")),
             ("Insert # note", lambda: self.sheet.set_active_value("# note")),
-            ("Examples…", self.example_menu), ("Sync definitions", self.sync_definitions),
+            ("Examples…", self.example_menu), ("Sync definitions", self.sync_definitions), ("Show file routing…", self.show_routing_map),
         ]
         for text, cmd in buttons:
             ttk.Button(tools, text=text, command=cmd).pack(side="left", padx=(0, 4))
 
-        self.sheet = SpreadsheetGrid(tab, rows=8, cols=12, on_change=self.grid_changed)
+        self.cell_details=tk.StringVar(value="Select a workflow cell to see its input, output and destination.")
+        self.sheet = SpreadsheetGrid(tab, rows=8, cols=12, on_change=self.grid_changed, on_select=self.describe_grid_cell)
         self.sheet.grid(row=2, column=0, sticky="nsew")
+        ttk.Label(tab,textvariable=self.cell_details,anchor="w").grid(row=3,column=0,sticky="ew",pady=(5,0))
+
+    def describe_grid_cell(self,row,col):
+        try:
+            cell=self.sheet.vars[row][col].get().strip()
+            parsed,_=parse_grid(self.sheet.get_grid())
+            kind=token_kind(cell)
+            if kind=="program":
+                pid=program_token_id(cell)
+                p=self.programs.get(pid)
+                occ=next((x for x in parsed.occurrences if x.row==row and x.col==col),None)
+                if occ and p:
+                    source=", ".join(occ.input_labels)
+                    output=self.data_defs.get(occ.output_label,DataDef(occ.output_label)).normalized_output_template()
+                    self.cell_details.set(f"{pid}_{p.normalized_name()} | Input: {source} | Output: {occ.output_label} → {output}")
+                else:self.cell_details.set(f"Program {pid}")
+            elif kind=="data":
+                d=self.data_defs.get(cell,DataDef(cell))
+                producer=parsed.producer_by_data.get(cell)
+                produced=f"{producer.program_id}_{self.programs[producer.program_id].normalized_name()}" if producer and producer.program_id in self.programs else "ROOT"
+                destinations=", ".join(f"{occ.program_id}_{self.programs[occ.program_id].normalized_name()}" for occ in parsed.occurrences if cell in occ.dependency_labels()) or "FINAL"
+                file=d.input_pattern if cell in parsed.root_data else d.normalized_output_template()
+                self.cell_details.set(f"{cell} | {file} | From: {produced} | To: {destinations}")
+            else:self.cell_details.set(cell)
+        except Exception:
+            self.cell_details.set("Select an input or output data word.")
 
     def sheet_add_row_placeholder(self):
         pass
@@ -2620,40 +2902,57 @@ class NetDashApp:
             self.read_variables_from_workflow,
             C_BUTTON_READ,
         ).pack(side="left")
-        ttk.Label(
-            tools,
-            text=(
-                "Scans Tab 1 and creates/refreshes every program ID and data-word definition. "
-                "Double-click a program row to browse for its script. Double-click a root data row to browse for its source."
-            ),
-            wraplength=1100,
-            justify="left",
-        ).pack(side="left", padx=(10, 0))
 
         pane = ttk.Panedwindow(tab, orient="horizontal"); pane.grid(row=1, column=0, sticky="nsew")
         left = ttk.LabelFrame(pane, text="Program IDs", padding=6)
         right = ttk.LabelFrame(pane, text="Data words", padding=6)
-        pane.add(left, weight=1); pane.add(right, weight=1)
+        pane.add(left, weight=3); pane.add(right, weight=2)
         self._build_program_editor(left); self._build_data_editor(right)
 
     def _build_program_editor(self, parent):
-        parent.rowconfigure(1, weight=1); parent.columnconfigure(0, weight=1)
-        ttk.Label(parent, text="Every program ID in the grid must define a real program/script and its command-line arguments.").grid(row=0, column=0, sticky="w")
-        self.program_tree = ttk.Treeview(parent, columns=("id", "name", "path", "usage"), show="headings", height=10)
-        for key, title, width in [("id", "ID", 55), ("name", "Name", 160), ("path", "Program/script", 330), ("usage", "Grid usage", 145)]:
-            self.program_tree.heading(key, text=title); self.program_tree.column(key, width=width, stretch=key in ("name", "path"))
-        self.program_tree.grid(row=1, column=0, sticky="nsew", pady=(5, 7)); self.program_tree.bind("<<TreeviewSelect>>", self.load_program); self.program_tree.bind("<Double-1>", self.on_program_double_click)
-        self.program_tree.tag_configure("missing", background=C_ERROR); self.program_tree.tag_configure("ok", background=C_PROGRAM)
+        parent.rowconfigure(1, weight=0)
+        parent.rowconfigure(2, weight=1)
+        parent.columnconfigure(0, weight=1)
+        self.program_tree = ttk.Treeview(parent, columns=("id", "name", "path", "usage"), show="headings", height=7)
+        for key, title, width in [("id", "ID", 50), ("name", "Name", 180), ("path", "Program/script", 310), ("usage", "Grid usage", 125)]:
+            self.program_tree.heading(key, text=title, command=lambda k=key: self._sort_tab2_tree("program", k))
+            self.program_tree.column(key, width=width, minwidth=45, stretch=key in ("name", "path"))
+        self.program_tree.grid(row=1, column=0, sticky="ew", pady=(5, 7))
+        self.program_tree.bind("<<TreeviewSelect>>", self.load_program)
+        self.program_tree.bind("<Double-1>", self.on_program_double_click)
+        self.program_tree.tag_configure("missing", background=C_ERROR)
+        self.program_tree.tag_configure("ok", background=C_PROGRAM)
 
-        form = ttk.Frame(parent); form.grid(row=2, column=0, sticky="ew"); form.columnconfigure(1, weight=1)
+        body = ttk.Frame(parent)
+        body.grid(row=2, column=0, sticky="nsew")
+        body.rowconfigure(0, weight=1)
+        body.columnconfigure(0, weight=1)
+        scroll_canvas = tk.Canvas(body, highlightthickness=0, borderwidth=0)
+        scroll_canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=scroll_canvas.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        scroll_canvas.configure(yscrollcommand=scrollbar.set)
+        interior = ttk.Frame(scroll_canvas, padding=(0, 3, 6, 5))
+        window_id = scroll_canvas.create_window((0, 0), window=interior, anchor="nw")
+        interior.bind("<Configure>", lambda _e: scroll_canvas.configure(scrollregion=scroll_canvas.bbox("all")))
+        scroll_canvas.bind("<Configure>", lambda e: scroll_canvas.itemconfigure(window_id, width=e.width))
+        self.program_editor_canvas = scroll_canvas
+
+        form = ttk.Frame(interior)
+        form.pack(fill="both", expand=True)
+        form.columnconfigure(1, weight=1)
+        form.columnconfigure(2, weight=0)
         self.p_id = tk.StringVar(); self.p_name = tk.StringVar(); self.p_path = tk.StringVar(); self.p_type = tk.StringVar(value="Linux executable")
         self.p_args = tk.StringVar(value="-i {input} -o {output}"); self.p_cpus = tk.StringVar(value="1"); self.p_mem = tk.StringVar(value="1 GB")
         self.p_time = tk.StringVar(value="24h"); self.p_forks = tk.StringVar(value="0"); self.p_outdir = tk.StringVar()
-        for var in (self.p_name,self.p_path,self.p_type,self.p_args,self.p_cpus,self.p_mem,self.p_time,self.p_forks,self.p_outdir):
-            var.trace_add("write",self._auto_save_program)
+        self.p_extra_inputs = tk.StringVar(); self.p_extra_outputs = tk.StringVar(); self.p_shared_resources=tk.StringVar()
+        for var in (self.p_name,self.p_path,self.p_type,self.p_args,self.p_cpus,self.p_mem,self.p_time,self.p_forks,self.p_outdir,self.p_extra_inputs,self.p_extra_outputs,self.p_shared_resources):
+            var.trace_add("write", self._auto_save_program)
+
         fields = [
-            ("Program ID", self.p_id), ("Name", self.p_name), ("Program/script", self.p_path), ("Arguments", self.p_args),
-            ("CPUs", self.p_cpus), ("Memory", self.p_mem), ("Time", self.p_time), ("maxForks", self.p_forks), ("Checkpoint folder", self.p_outdir),
+            ("Program ID", self.p_id), ("Name", self.p_name), ("Program/script", self.p_path),
+            ("CPUs", self.p_cpus), ("Memory", self.p_mem), ("Time", self.p_time),
+            ("maxForks", self.p_forks), ("Checkpoint folder", self.p_outdir),
         ]
         for row, (label, var) in enumerate(fields):
             ttk.Label(form, text=label + ":").grid(row=row, column=0, sticky="w", pady=2)
@@ -2662,28 +2961,138 @@ class NetDashApp:
                 actions = ttk.Frame(form)
                 actions.grid(row=row, column=2, sticky="w", pady=2)
                 ttk.Button(actions, text="Browse…", command=self.browse_program).pack(side="left")
-                ttk.Button(
-                    actions,
-                    text="Read CLI help / accepted options…",
-                    command=self.read_selected_program_cli_help,
-                ).pack(side="left", padx=(4, 0))
-        ttk.Label(form, text="Type:").grid(row=9, column=0, sticky="w", pady=2)
-        ttk.Combobox(form, textvariable=self.p_type, values=PROGRAM_TYPES, state="readonly").grid(row=9, column=1, sticky="w", padx=(6, 4), pady=2)
-        ttk.Label(form, text=(
-            "Named inputs are supported and recommended: e.g. --tumor {TUMOR} --normal {NORMAL} -o {output}.  "
-            "Generic {input}, {input1}, {input2} identify logical streams. For grouped data, {TUMOR} or {input1} expands every file; use {TUMOR_1}, {TUMOR_2}, ... to address individual members.  "
-            "Numbered grouped members follow alphabetical filename order; they are ordered files, not biological R1/R2 or lane categories.  "
-            "After WASG, {group_manifest} is the TSV manifest while {inputs} expands the actual staged files.  "
-            "To pass literal braces, double them: --json '{{\"x\":1}}' generates --json '{\"x\":1}'. Memory examples: 512 MB, 1 GB. Time examples: 30m, 2h, 2d.  "
-            "CLI discovery safely tries --help and -h with a short timeout; it can only report options that the selected program exposes through its own CLI help."
-        ), wraplength=900, justify="left").grid(row=10, column=0, columnspan=3, sticky="w", pady=(5, 2))
+                ttk.Button(actions, text="CLI help…", command=self.read_selected_program_cli_help).pack(side="left", padx=(4,0))
+        row = len(fields)
+        ttk.Label(form, text="Type:").grid(row=row, column=0, sticky="w", pady=2)
+        ttk.Combobox(form, textvariable=self.p_type, values=PROGRAM_TYPES, state="readonly").grid(row=row, column=1, sticky="ew", padx=(6, 4), pady=2)
+        row += 1
+        self._add_program_multiline_editor(form, row, "Arguments / Inline Bash", "arguments", self.p_args, 6)
+        row += 1
+        self._add_program_multiline_editor(form, row, "Shared resources (ALIAS=DATA_WORD)", "shared", self.p_shared_resources, 4)
+        row += 1
+        self._add_program_multiline_editor(form, row, "Additional input files", "inputs", self.p_extra_inputs, 4)
+        row += 1
+        self._add_program_multiline_editor(form, row, "Additional output files", "outputs", self.p_extra_outputs, 3)
+        routing=ttk.LabelFrame(interior,text="Input / output routing",padding=5)
+        routing.pack(fill="x",pady=(8,4))
+        self.routing_tree=ttk.Treeview(routing,columns=("kind","word","placeholder","file","destination"),show="headings",height=8)
+        for key,title,width in [("kind","Role",90),("word","Data / program",150),("placeholder","Placeholder",105),("file","Filename / source",330),("destination","Sent to / location",330)]:
+            self.routing_tree.heading(key,text=title)
+            self.routing_tree.column(key,width=width,minwidth=70,stretch=key in ("file","destination"))
+        self.routing_tree.pack(fill="x")
+        self.routing_tree.bind("<Double-1>",self._routing_double_click)
+
+    def _add_program_multiline_editor(self, form, row, title, key, variable, height):
+        cell = ttk.Frame(form)
+        cell.grid(row=row, column=0, sticky="nw", pady=(7, 3))
+        ttk.Label(cell, text=title + ":").pack(anchor="w")
+        ttk.Button(cell, text="Expand editor…", command=lambda k=key: self.edit_program_multiline(k)).pack(anchor="w", pady=(3, 0))
+        container = ttk.Frame(form)
+        container.grid(row=row, column=1, columnspan=2, sticky="nsew", padx=(6, 4), pady=(5, 3))
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+        widget = tk.Text(container, height=height, width=54, wrap="word", undo=True, font=("Consolas", 10), relief="solid", borderwidth=1)
+        widget.grid(row=0, column=0, sticky="nsew")
+        bar = ttk.Scrollbar(container, orient="vertical", command=widget.yview)
+        bar.grid(row=0, column=1, sticky="ns")
+        widget.configure(yscrollcommand=bar.set)
+        self._program_multiline_widgets[key] = (widget, variable)
+        widget.bind("<<Modified>>", lambda _e, k=key: self._program_multiline_changed(k))
+        widget.edit_modified(False)
+
+    def _program_multiline_changed(self, key):
+        widget, variable = self._program_multiline_widgets[key]
+        if not widget.edit_modified():
+            return
+        widget.edit_modified(False)
+        if self._loading_program_form:
+            return
+        value = widget.get("1.0", "end-1c")
+        if variable.get() != value:
+            variable.set(value)
+
+    def _refresh_program_multiline(self):
+        for key, (widget, variable) in self._program_multiline_widgets.items():
+            value = variable.get()
+            if key in ("inputs", "outputs", "shared"):
+                value = value.replace(";", "\n")
+            widget.delete("1.0", "end")
+            widget.insert("1.0", value)
+            widget.edit_modified(False)
+
+    def edit_program_multiline(self, key):
+        if not self.p_id.get().strip():
+            messagebox.showinfo("Program editor", "Select a program first.", parent=self.root)
+            return
+        title = {"arguments": "Arguments / Inline Bash", "inputs": "Additional input files", "outputs": "Additional output files", "shared": "Shared resources"}[key]
+        widget, variable = self._program_multiline_widgets[key]
+        win = tk.Toplevel(self.root)
+        win.title(f"Program {self.p_id.get()} — {title}")
+        win.geometry("1100x670")
+        win.transient(self.root)
+        holder = ttk.Frame(win, padding=10)
+        holder.pack(fill="both", expand=True)
+        frame = ttk.Frame(holder)
+        frame.pack(fill="both", expand=True)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+        edit = tk.Text(frame, wrap="none", undo=True, font=("Consolas", 11))
+        edit.grid(row=0, column=0, sticky="nsew")
+        ys = ttk.Scrollbar(frame, orient="vertical", command=edit.yview)
+        ys.grid(row=0, column=1, sticky="ns")
+        xs = ttk.Scrollbar(frame, orient="horizontal", command=edit.xview)
+        xs.grid(row=1, column=0, sticky="ew")
+        edit.configure(yscrollcommand=ys.set, xscrollcommand=xs.set)
+        edit.insert("1.0", widget.get("1.0", "end-1c"))
+        buttons = ttk.Frame(holder)
+        buttons.pack(fill="x", pady=(8, 0))
+        def commit():
+            value = edit.get("1.0", "end-1c").strip()
+            self._loading_program_form = True
+            try:
+                if key == "arguments" and self.p_type.get() == "Inline Bash":
+                    self.p_path.set("/bin/bash")
+                variable.set(value)
+                widget.delete("1.0", "end")
+                widget.insert("1.0", value)
+                widget.edit_modified(False)
+            finally:
+                self._loading_program_form = False
+            self.save_program(silent=False)
+            win.destroy()
+        ttk.Button(buttons, text="Save", command=commit).pack(side="right")
+        ttk.Button(buttons, text="Cancel", command=win.destroy).pack(side="right", padx=(0,8))
+        edit.focus_set()
+
+    def _sort_tab2_tree(self, table, column):
+        previous, descending = self._tab2_sorts[table]
+        self._tab2_sorts[table] = (column, not descending if previous == column else False)
+        self._apply_tab2_sort(table)
+
+    def _apply_tab2_sort(self, table):
+        tree = self.program_tree if table == "program" else self.data_tree
+        selected, descending = self._tab2_sorts[table]
+        titles = {"program": {"id":"ID","name":"Name","path":"Program/script","usage":"Grid usage"},
+                  "data": {"label":"Data word","role":"Data type","mode":"Input mode","definition":"Definition / input","producer":"Produced by","consumer":"Used by"}}[table]
+        for column, label in titles.items():
+            suffix = (" ▼" if descending else " ▲") if column == selected else ""
+            tree.heading(column, text=label + suffix, command=lambda k=column, t=table: self._sort_tab2_tree(t,k))
+        if not selected:
+            return
+        def sort_key(iid):
+            value = str(tree.set(iid, selected)).strip()
+            if table == "program" and selected == "id":
+                return program_sort_key(value)
+            return value.casefold()
+        items = sorted(tree.get_children(""), key=sort_key, reverse=descending)
+        for index, iid in enumerate(items):
+            tree.move(iid, "", index)
 
     def _build_data_editor(self, parent):
         parent.rowconfigure(1, weight=1); parent.columnconfigure(0, weight=1)
-        ttk.Label(parent, text="Root data words define input sources; generated/final data words can define their published output folder. Double-click a row to browse the appropriate source/destination.").grid(row=0, column=0, sticky="w")
-        self.data_tree = ttk.Treeview(parent, columns=("label", "role", "mode", "definition"), show="headings", height=10)
-        for key, title, width in [("label", "Data word", 110), ("role", "Data type", 105), ("mode", "Input mode", 155), ("definition", "Definition / input", 340)]:
-            self.data_tree.heading(key, text=title); self.data_tree.column(key, width=width, stretch=key == "definition")
+        self.data_tree = ttk.Treeview(parent, columns=("label", "role", "mode", "definition", "producer", "consumer"), show="headings", height=10)
+        for key, title, width in [("label", "Data word", 100), ("role", "Data type", 90), ("mode", "Input mode", 130), ("definition", "Definition / input", 250), ("producer", "Produced by", 150), ("consumer", "Used by", 150)]:
+            self.data_tree.heading(key, text=title, command=lambda k=key: self._sort_tab2_tree("data", k)); self.data_tree.column(key, width=width, stretch=key == "definition")
         self.data_tree.grid(row=1, column=0, sticky="nsew", pady=(5, 7)); self.data_tree.bind("<<TreeviewSelect>>", self.load_data); self.data_tree.bind("<Double-1>", self.on_data_double_click)
         for tag, color in [("missing", C_ERROR), ("root", C_DATA), ("shared", C_SHARED), ("parallel", C_DATA), ("serial", C_SERIAL)]:
             self.data_tree.tag_configure(tag, background=color)
@@ -2691,8 +3100,8 @@ class NetDashApp:
         form = ttk.Frame(parent); form.grid(row=2, column=0, sticky="ew"); form.columnconfigure(1, weight=1)
         self.d_label = tk.StringVar(); self.d_role = tk.StringVar(); self.d_mode = tk.StringVar(value=DATA_INPUT_MODES[0])
         self.d_desc = tk.StringVar(); self.d_input = tk.StringVar(); self.d_regex = tk.StringVar(); self.d_output = tk.StringVar()
-        self.d_extensions = tk.StringVar(); self.d_publish = tk.StringVar();self.d_multifile=tk.BooleanVar(value=False);self.d_group_size=tk.StringVar(value="2")
-        for var in (self.d_mode,self.d_desc,self.d_input,self.d_regex,self.d_output,self.d_extensions,self.d_publish,self.d_multifile,self.d_group_size):
+        self.d_extensions = tk.StringVar(); self.d_publish = tk.StringVar(); self.d_local_scan = tk.StringVar();self.d_multifile=tk.BooleanVar(value=False);self.d_group_size=tk.StringVar(value="2")
+        for var in (self.d_mode,self.d_desc,self.d_input,self.d_regex,self.d_output,self.d_extensions,self.d_publish,self.d_local_scan,self.d_multifile,self.d_group_size):
             var.trace_add("write",self._auto_save_data)
         ttk.Label(form, text="Data word:").grid(row=0, column=0, sticky="w", pady=2); ttk.Entry(form, textvariable=self.d_label, state="readonly").grid(row=0, column=1, sticky="ew", padx=(6,4), pady=2)
         ttk.Label(form, text="Detected data type:").grid(row=1, column=0, sticky="w", pady=2); ttk.Entry(form, textvariable=self.d_role, state="readonly").grid(row=1, column=1, sticky="ew", padx=(6,4), pady=2)
@@ -2732,14 +3141,10 @@ class NetDashApp:
         ttk.Button(outb, text="Folder…", command=self.browse_publish_folder).pack(side="left")
         ttk.Button(outb, text="Clear", command=lambda: self.d_publish.set("")).pack(side="left", padx=(3,0))
 
-        ttk.Label(form, text=(
-            "Root inputs: Input folder/file/glob + extension filter define what NextDash reads; ** recursively searches all nested folders.  "
-            "For paired-end data, use a regex such as (.+)_R[12]\\.fastq\\.gz, enable grouping, set Files/sample=2, and use named members such as {READS_1}/{READS_2}; {READS}, {input}, or {input1} passes every grouped file.  "
-            "Member numbers are assigned by alphabetical filename order; with multi-lane files they do not combine all R1 files or all R2 files.  "
-            "Shared resource is selected only here, for a root input: it is one existing reference file reused by every applicable task, not a result created by WAS, WASG, or WASJ.  "
-            "Generated/final data: Published output folder overrides results/<program>_out.  "
-            "Per-sample output templates must contain {lineage} or {sample}; wildcards are not allowed. Fields: {lineage}, {sample}, {program}, {data}"
-        ), wraplength=900, justify="left").grid(row=9, column=0, columnspan=3, sticky="w", pady=(5,2))
+        ttk.Label(form,text="Local scan path (optional):").grid(row=9,column=0,sticky="w",pady=2)
+        ttk.Entry(form,textvariable=self.d_local_scan).grid(row=9,column=1,sticky="ew",padx=(6,4),pady=2)
+        ttk.Button(form,text="Browse…",command=self.browse_local_scan).grid(row=9,column=2,sticky="w",pady=2)
+
         self.manifest_text = tk.Text(parent, height=8, wrap="none", state="disabled"); self.manifest_text.grid(row=3, column=0, sticky="ew", pady=(8,0))
 
     def _build_wasj_tab(self):
@@ -2859,19 +3264,19 @@ class NetDashApp:
         self._colored_action_button(actions,"Generate project",self.generate_project,C_BUTTON_GENERATE).pack(side="left")
         self.main_preview=tk.Text(tab,wrap="none",state="disabled");self.main_preview.grid(row=2,column=0,sticky="nsew")
 
-    # ------------------------------------------------------------------
-    # Grid and project files
-    # ------------------------------------------------------------------
+
+
+
     def grid_changed(self):
-        # Cell editing first applies token-type colors (all data words blue).
-        # Immediately re-parse the current grid so serial/cohort coloring also
-        # propagates through programs added downstream of WASG.
+
+
+
         try:
             parsed, _issues = parse_grid(self.sheet.get_grid())
             self.refresh_grid_flow_colors(parsed)
         except Exception:
-            # Incomplete tokens while the user is typing are allowed; the next
-            # edit/synchronization/validation pass will refresh the colors.
+
+
             pass
         self.status_var.set("Grid changed. Sync definitions / WASJ blocks before generation.")
 
@@ -2907,7 +3312,7 @@ class NetDashApp:
         path=filedialog.asksaveasfilename(parent=self.root,title="Save complete NextDash project",defaultextension=".nextdash.json",filetypes=[("NextDash project","*.nextdash.json *.nextDash.json"),("JSON","*.json")])
         if not path:return
         payload={
-            "format":"NextDash project","version":8.0,"grid":trim_grid(self.sheet.get_grid()),
+            "format":"NextDash project","version":11.0,"grid":trim_grid(self.sheet.get_grid()),
             "programs":{k:vars(v) for k,v in self.programs.items()},
             "data_defs":{k:vars(v) for k,v in self.data_defs.items()},
             "wasj_configs":{k:vars(v) for k,v in self.wasj_configs.items()},
@@ -2933,9 +3338,9 @@ class NetDashApp:
             self.current_grid_path=None;self.sheet.set_grid(payload.get("grid") or [[""]*12 for _ in range(8)]);self.sync_definitions();self.status_var.set(f"Loaded project: {path}")
         except Exception as exc:messagebox.showerror("Load project",str(exc),parent=self.root)
 
-    # ------------------------------------------------------------------
-    # Examples
-    # ------------------------------------------------------------------
+
+
+
     def example_menu(self):
         win=tk.Toplevel(self.root);win.title("NextDash examples");win.geometry("680x380");frm=ttk.Frame(win,padding=12);frm.pack(fill="both",expand=True)
         ttk.Label(frm,text="Choose an example",font=("TkDefaultFont",11,"bold")).pack(anchor="w",pady=(0,8))
@@ -2957,13 +3362,19 @@ class NetDashApp:
     def load_mixed_example(self):
         self.sheet.set_grid([["A","1","B","WAS","2","C","WASJ","4","E","5","F"],["","","D","WAS","","D2","WASJ","",""]]);self.sync_definitions();self.status_var.set("Loaded a mixed synchronization example.")
 
-    # ------------------------------------------------------------------
-    # Sync definitions
-    # ------------------------------------------------------------------
+
+
+
     def _parse_and_sync(self):
         parsed,issues=parse_grid(self.sheet.get_grid());self.current_parsed=parsed
-        for pid in parsed.program_ids:
-            self.programs.setdefault(pid,ProgramDef(pid,name=f"Program_{pid}"))
+        for row in self.sheet.get_grid():
+            for token in row:
+                if token_kind(token)!="program":
+                    continue
+                pid=program_token_id(token)
+                alias=token[len(pid)+1:] if token.startswith(pid+"_") else ""
+                self.programs.setdefault(pid,ProgramDef(pid,name=alias or f"Program_{pid}"))
+        self.sheet.refresh_program_labels(self.programs)
         for label in parsed.data_labels:
             self.data_defs.setdefault(label,DataDef(label))
         active_ids={occ.barrier_id for occ in parsed.wasj_occurrences()}
@@ -2992,7 +3403,89 @@ class NetDashApp:
         self.program_tree.delete(*self.program_tree.get_children())
         for pid in sorted(self.current_parsed.program_ids,key=program_sort_key):
             p=self.programs[pid];uses=[o for o in self.current_parsed.occurrences if o.program_id==pid];usage=", ".join(sorted({f"{o.barrier}:{o.arity}" for o in uses}))
-            self.program_tree.insert("","end",iid=pid,values=(pid,p.normalized_name(),p.program_path or "UNDEFINED",usage),tags=("ok" if p.program_path.strip() else "missing",))
+            self.program_tree.insert("","end",iid=pid,values=(pid,p.normalized_name(),("[Inline Bash]" if p.program_type=="Inline Bash" else (p.program_path or "UNDEFINED")),usage),tags=("ok" if p.program_type=="Inline Bash" or p.program_path.strip() else "missing",))
+        self._apply_tab2_sort("program")
+
+    def _program_route_records(self, pid: str):
+        parsed=self.current_parsed
+        if not parsed or pid not in self.programs:
+            return []
+        p=self.programs[pid]
+        records=[]
+        for occ in [o for o in parsed.occurrences if o.program_id==pid]:
+            for idx,word in enumerate(occ.input_labels,1):
+                d=self.data_defs.get(word,DataDef(word))
+                source=d.input_pattern if word in parsed.root_data else d.normalized_output_template()
+                producer=parsed.producer_by_data.get(word)
+                from_program=(f"{producer.program_id}_{self.programs[producer.program_id].normalized_name()}" if producer else "ROOT")
+                placeholder="{input}" if len(occ.input_labels)==1 else f"{{input{idx}}}"
+                records.append(("INPUT",word,placeholder,source,from_program))
+            d=self.data_defs[occ.output_label]
+            consumers=[o for o in parsed.occurrences if occ.output_label in o.dependency_labels()]
+            downstream=", ".join(f"{o.program_id}_{self.programs[o.program_id].normalized_name()}" for o in consumers) or "FINAL OUTPUT"
+            records.append(("OUTPUT",occ.output_label,"{output}",d.normalized_output_template(),downstream))
+            for idx,template in enumerate(parse_additional_outputs(p.additional_outputs),2):
+                records.append(("AUX OUTPUT",occ.output_label,f"{{output{idx}}}",template,"Published with primary output"))
+            for alias,word in parse_shared_resources(p.shared_resources):
+                d=self.data_defs.get(word,DataDef(word))
+                records.append(("SHARED",word,f"{{{alias}}}",d.input_pattern,"Shared single resource"))
+        return records
+
+    def refresh_program_routing(self):
+        if not hasattr(self,"routing_tree"):
+            return
+        tree=self.routing_tree
+        tree.delete(*tree.get_children())
+        pid=self.p_id.get().strip() if hasattr(self,"p_id") else ""
+        if not pid or pid not in self.programs:
+            return
+        try:
+            records=self._program_route_records(pid)
+        except NetDashError as exc:
+            records=[("ERROR",pid,"","",str(exc))]
+        for kind,word,placeholder,file,dest in records:
+            tree.insert("","end",values=(kind,word,placeholder,file,dest))
+
+    def _routing_double_click(self,event):
+        item=self.routing_tree.identify_row(event.y)
+        if not item:
+            return
+        kind,word,*_ = self.routing_tree.item(item,"values")
+        if kind in ("INPUT","OUTPUT","AUX OUTPUT","SHARED") and self.data_tree.exists(word):
+            self.data_tree.selection_set(word)
+            self.data_tree.see(word)
+            self.load_data()
+
+    def show_routing_map(self):
+        self.sync_definitions()
+        win=tk.Toplevel(self.root)
+        win.title("Workflow file routing")
+        win.geometry("1350x600")
+        frame=ttk.Frame(win,padding=10)
+        frame.pack(fill="both",expand=True)
+        tree=ttk.Treeview(frame,columns=("program","input","output","template","next","shared"),show="headings")
+        for key,title,width in [("program","Program",220),("input","Input data",135),("output","Output data",135),("template","Output filename",235),("next","Next program",285),("shared","Shared resources",285)]:
+            tree.heading(key,text=title)
+            tree.column(key,width=width,minwidth=90,stretch=True)
+        tree.pack(fill="both",expand=True)
+        parsed=self.current_parsed
+        for occ in topological_occurrences(parsed):
+            p=self.programs[occ.program_id]
+            d=self.data_defs[occ.output_label]
+            consumers=[x for x in parsed.occurrences if occ.output_label in x.dependency_labels()]
+            next_names=", ".join(f"{x.program_id}_{self.programs[x.program_id].normalized_name()}" for x in consumers) or "FINAL"
+            resources=", ".join(f"{alias}={word}" for alias,word in parse_shared_resources(p.shared_resources))
+            tree.insert("","end",iid=occ.occurrence_id,values=(f"{occ.program_id}_{p.normalized_name()}",", ".join(occ.input_labels),occ.output_label,d.normalized_output_template(),next_names,resources))
+        def navigate(_event):
+            row=tree.focus()
+            match=next((o for o in parsed.occurrences if o.occurrence_id==row),None)
+            if match and self.program_tree.exists(match.program_id):
+                self.program_tree.selection_set(match.program_id)
+                self.program_tree.see(match.program_id)
+                self.load_program()
+                self.notebook.select(1)
+                win.destroy()
+        tree.bind("<Double-1>",navigate)
 
     def _terminal_data_labels(self):
         if not self.current_parsed:
@@ -3017,8 +3510,8 @@ class NetDashApp:
             return True
         if producer.barrier == "WASG":
             return False
-        # WASJ emits one record per matching Join key, so different Join-key
-        # groups can still run independently and therefore in parallel.
+
+
         if producer.barrier == "WASJ":
             return True
         upstream = producer.primary_label or (producer.input_labels[0] if producer.input_labels else "")
@@ -3047,6 +3540,8 @@ class NetDashApp:
                 role="ROOT INPUT"
                 mode=d.normalized_input_mode()
                 definition=d.input_pattern or "UNDEFINED"
+                if d.local_scan_pattern:
+                    definition+=f" | local: {d.local_scan_pattern}"
                 if d.input_extensions.strip():
                     definition += f"  [filter: {d.input_extensions}]"
                 ok=bool(d.input_pattern.strip())
@@ -3059,7 +3554,22 @@ class NetDashApp:
                 destination=d.publish_directory.strip() or "results/<program>_out"
                 definition=f"{d.normalized_output_template()}  →  {destination}"
                 tag="parallel" if parallel else "serial"
-            self.data_tree.insert("","end",iid=label,values=(label,role,mode,definition),tags=(tag,))
+            producer=self.current_parsed.producer_by_data.get(label)
+            produced_by=(f"{producer.program_id}_{self.programs[producer.program_id].normalized_name()}" if producer else "ROOT")
+            consumers=[o for o in self.current_parsed.occurrences if label in o.dependency_labels()]
+            used_by=", ".join(f"{o.program_id}_{self.programs[o.program_id].normalized_name()}" for o in consumers) or "—"
+            resource_users=[]
+            for pid in self.current_parsed.program_ids:
+                try:
+                    resources=parse_shared_resources(self.programs[pid].shared_resources)
+                except NetDashError:
+                    resources=[]
+                if any(res_word==label for _alias,res_word in resources):
+                    resource_users.append(f"{pid}_{self.programs[pid].normalized_name()}")
+            if resource_users:
+                used_by=", ".join(resource_users)
+            self.data_tree.insert("","end",iid=label,values=(label,role,mode,definition,produced_by,used_by),tags=(tag,))
+        self._apply_tab2_sort("data")
 
     def refresh_wasj_tree(self):
         if not hasattr(self,"wasj_tree") or not self.current_parsed:return
@@ -3068,16 +3578,30 @@ class NetDashApp:
             cfg=self.wasj_configs.setdefault(occ.barrier_id,WASJConfig(occ.barrier_id));ok=bool(cfg.sample_table_path and cfg.join_key and cfg.normalized_difference_keys() and (cfg.file_column or cfg.sample_id_column))
             self.wasj_tree.insert("","end",iid=occ.barrier_id,values=(occ.barrier_id,occ.program_id,", ".join(occ.input_labels),"configured" if ok else "MISSING"),tags=("ok" if ok else "missing",))
 
-    # ------------------------------------------------------------------
-    # Program/data editors
-    # ------------------------------------------------------------------
+
+
+
     def load_program(self,_e=None):
         sel=self.program_tree.selection()
         if not sel:return
         p=self.programs[sel[0]]
         self._loading_program_form=True
-        try:self.p_id.set(p.program_id);self.p_name.set(p.name);self.p_path.set(p.program_path);self.p_type.set(p.program_type);self.p_args.set(p.arguments_template);self.p_cpus.set(str(p.cpus));self.p_mem.set(p.memory);self.p_time.set(p.time);self.p_forks.set(str(p.max_forks));self.p_outdir.set(p.publish_subdirectory)
-        finally:self._loading_program_form=False
+        try:self.p_id.set(p.program_id);self.p_name.set(p.name);self.p_path.set(p.program_path);self.p_type.set(p.program_type);self.p_args.set(p.arguments_template);self.p_cpus.set(str(p.cpus));self.p_mem.set(p.memory);self.p_time.set(p.time);self.p_forks.set(str(p.max_forks));self.p_outdir.set(p.publish_subdirectory);self.p_extra_inputs.set(p.additional_inputs);self.p_extra_outputs.set(p.additional_outputs);self.p_shared_resources.set(p.shared_resources)
+        finally:
+            self._refresh_program_multiline()
+            self._loading_program_form=False
+        self.refresh_program_routing()
+
+    def edit_inline_bash(self):
+        if self.p_type.get() != "Inline Bash":
+            self._loading_program_form=True
+            try:
+                self.p_type.set("Inline Bash")
+                self.p_path.set("/bin/bash")
+            finally:
+                self._loading_program_form=False
+            self.save_program(silent=True)
+        self.edit_program_multiline("arguments")
 
     def _auto_save_program(self,*_args):
         if not self._loading_program_form:self.save_program(silent=True,refresh=False)
@@ -3086,8 +3610,10 @@ class NetDashApp:
         pid=self.p_id.get().strip()
         if not pid:return
         try:
-            p=self.programs[pid];p.name=self.p_name.get().strip();p.program_path=self.p_path.get().strip();p.program_type=self.p_type.get();p.arguments_template=self.p_args.get().strip();p.cpus=int(self.p_cpus.get());p.memory=self.p_mem.get().strip();p.time=self.p_time.get().strip();p.max_forks=int(self.p_forks.get());p.publish_subdirectory=self.p_outdir.get().strip()
+            p=self.programs[pid];p.name=self.p_name.get().strip();p.program_path=self.p_path.get().strip();p.program_type=self.p_type.get();p.arguments_template=self.p_args.get().strip();p.cpus=int(self.p_cpus.get());p.memory=self.p_mem.get().strip();p.time=self.p_time.get().strip();p.max_forks=int(self.p_forks.get());p.publish_subdirectory=self.p_outdir.get().strip();p.additional_inputs=self.p_extra_inputs.get().strip();p.additional_outputs=self.p_extra_outputs.get().strip();p.shared_resources=self.p_shared_resources.get().strip()
+            self.sheet.refresh_program_labels(self.programs)
             if refresh:self.refresh_program_tree()
+            self.refresh_program_routing()
             if not silent:self.status_var.set(f"Saved Program {pid}.")
         except Exception as exc:
             if not silent:messagebox.showerror("Program definition",str(exc),parent=self.root)
@@ -3123,7 +3649,9 @@ class NetDashApp:
         self.program_tree.selection_set(row)
         self.program_tree.focus(row)
         self.load_program()
-        if self.browse_program():
+        if self.p_type.get() == "Inline Bash":
+            self.edit_inline_bash()
+        elif self.browse_program():
             self.save_program()
 
     def _cli_probe_commands(self, path: str, program_type: str, flag: str):
@@ -3134,11 +3662,11 @@ class NetDashApp:
         suffix = Path(path).suffix.lower()
         candidates = []
 
-        # Python scripts are safest to inspect with the same interpreter that runs NextDash.
+
         if program_type == "Python 3" or suffix == ".py":
             candidates.append([sys.executable, path, flag])
 
-        # Try a locally installed Rscript for R programs.
+
         if program_type == "Rscript" or suffix == ".r":
             candidates.append(["Rscript", path, flag])
 
@@ -3148,7 +3676,7 @@ class NetDashApp:
             if program_type == "Bash" or suffix in (".sh", ".bash"):
                 candidates.append(["wsl", "bash", "-lc", f"bash {qpath} {shlex.quote(flag)}"])
             else:
-                # Useful for Linux executables/scripts stored on a Windows drive.
+
                 candidates.append(["wsl", "bash", "-lc", f"{qpath} {shlex.quote(flag)}"])
         else:
             if program_type == "Bash" or suffix in (".sh", ".bash"):
@@ -3156,7 +3684,7 @@ class NetDashApp:
             elif program_type == "Linux executable" and not candidates:
                 candidates.append([path, flag])
 
-        # Preserve order while removing duplicates.
+
         unique = []
         seen = set()
         for cmd in candidates:
@@ -3184,7 +3712,7 @@ class NetDashApp:
                     attempts.append((printable, completed.returncode, output))
                     if output and (best is None or len(output) > len(best[2])):
                         best = (printable, completed.returncode, output)
-                    # A normal help exit with useful text is enough.
+
                     if output and completed.returncode == 0:
                         return (printable, completed.returncode, output), attempts
                 except subprocess.TimeoutExpired:
@@ -3269,7 +3797,7 @@ class NetDashApp:
         self._loading_data_form=True
         try:
             self.d_label.set(label); self.d_role.set(role); self.d_mode.set(d.normalized_input_mode())
-            self.d_desc.set(d.description); self.d_input.set(d.input_pattern); self.d_extensions.set(d.input_extensions)
+            self.d_desc.set(d.description); self.d_input.set(d.input_pattern); self.d_local_scan.set(d.local_scan_pattern); self.d_extensions.set(d.input_extensions)
             self.d_regex.set(d.sample_regex);self.d_multifile.set(bool(d.group_files_by_sample));self.d_group_size.set(str(d.expected_files_per_sample)); self.d_output.set(d.output_template or d.normalized_output_template()); self.d_publish.set(d.publish_directory)
         finally:self._loading_data_form=False
 
@@ -3280,7 +3808,7 @@ class NetDashApp:
         label=self.d_label.get().strip()
         if not label:return
         d=self.data_defs[label]
-        d.input_mode=self.d_mode.get(); d.description=self.d_desc.get().strip(); d.input_pattern=self.d_input.get().strip()
+        d.input_mode=self.d_mode.get(); d.description=self.d_desc.get().strip(); d.input_pattern=self.d_input.get().strip();d.local_scan_pattern=self.d_local_scan.get().strip()
         d.input_extensions=self.d_extensions.get().strip(); d.sample_regex=self.d_regex.get().strip(); d.output_template=self.d_output.get().strip()
         d.group_files_by_sample=bool(self.d_multifile.get());d.publish_directory=self.d_publish.get().strip()
         try:d.expected_files_per_sample=int(self.d_group_size.get())
@@ -3293,6 +3821,15 @@ class NetDashApp:
             else:
                 destination=d.publish_directory or "results/<program>_out"
                 self.status_var.set(f"Saved generated data {label}; publish destination: {destination}.")
+
+    def browse_local_scan(self):
+        if self.d_mode.get()==MODE_SHARED:
+            selected=filedialog.askopenfilename(parent=self.root,title="Select local reference file")
+        else:
+            selected=filedialog.askdirectory(parent=self.root,title="Select local input folder")
+        if selected:
+            self.d_local_scan.set(selected)
+            self.save_data(silent=True)
 
     def browse_data_folder(self):
         p=filedialog.askdirectory(parent=self.root,title="Choose input folder")
@@ -3326,9 +3863,9 @@ class NetDashApp:
         lines=["data\tsample_id\tfile"]+[f"{r['data_id']}\t{r['sample_id']}\t{r['input_path']}" for r in rows]+[str(i) for i in issues]
         self._set_text(self.manifest_text,"\n".join(lines));self.status_var.set(f"Scanned {len(rows)} root input records.")
 
-    # ------------------------------------------------------------------
-    # WASJ metadata editor
-    # ------------------------------------------------------------------
+
+
+
     def _occurrence_by_wasj_id(self,barrier_id):
         if not self.current_parsed:return None
         return next((o for o in self.current_parsed.wasj_occurrences() if o.barrier_id==barrier_id),None)
@@ -3482,9 +4019,9 @@ class NetDashApp:
         lines.append("");lines.append("STATUS: INVALID" if errors else "STATUS: VALID")
         self._set_text(self.wasj_preview,"\n".join(lines))
 
-    # ------------------------------------------------------------------
-    # Validation / diagram
-    # ------------------------------------------------------------------
+
+
+
     def _all_validation(self,require_files=False):
         parsed,issues=self._parse_and_sync();issues+=validate_definitions(parsed,self.programs,self.data_defs,self.wasj_configs,require_files=require_files);rows,scan_issues=scan_root_inputs(parsed,self.data_defs,self.wasj_configs);issues+=scan_issues
         if rows:issues+=validate_wasj_configs(parsed,self.data_defs,rows,self.wasj_configs)
@@ -3523,13 +4060,13 @@ class NetDashApp:
         def center(r,c):
             x1,y1,x2,y2=bounds(r,c);return (x1+x2)/2,(y1+y2)/2
 
-        # Soft alternating row lanes make large workflows easier to follow.
+
         for r in range(rows):
             lane_y=origin_y+r*ch+5
             cv.create_rectangle(10,lane_y,diagram_width-20,lane_y+ch-10,fill="#FFFFFF" if r%2==0 else "#F1F5F9",outline="")
             cv.create_text(28,lane_y+(ch-10)/2,text=f"R{r+1}",fill="#94A3B8",font=("TkDefaultFont",8,"bold"))
 
-        # Horizontal workflow connectors are drawn first so nodes sit above them.
+
         for r in range(rows):
             for c in range(cols-1):
                 a,b=grid[r][c],grid[r][c+1]
@@ -3537,7 +4074,7 @@ class NetDashApp:
                 _,cy=center(r,c);x1=bounds(r,c)[2]+3;x2=bounds(r,c+1)[0]-5
                 cv.create_line(x1,cy,x2,cy,arrow="last",arrowshape=(9,11,4),width=3,fill="#94A3B8",capstyle="round")
 
-        # Routed wires and synchronization spines use their semantic colors.
+
         for (r,c),source in parsed.wire_sources.items():
             if grid[r][c]=="|":
                 cx,_=center(r,c);top=origin_y+r*ch+4;bottom=origin_y+(r+1)*ch+4
@@ -3578,7 +4115,7 @@ class NetDashApp:
                 if kind=="program" and token in self.programs:label=f"{token}\n{self.programs[token].normalized_name()}"
                 cv.create_text(cx,cy,text=label,width=node_w-14,fill=C_TEXT,font=("TkDefaultFont",9,"bold" if kind in ("program","reserved") else "normal"),justify="center")
 
-        # Compact color key at the bottom of the canvas.
+
         legend_y=origin_y+rows*ch+22;legend_x=22
         legend=[("Parallel data",C_DATA,C_BLUE),("Serial/cohort",C_SERIAL,C_SERIAL_EDGE),("Program",C_PROGRAM,C_PURPLE),("WAS",C_WAS,C_WAS_EDGE),("WASG",C_WASG,C_WASG_EDGE),("WASJ",C_WASJ,C_WASJ_EDGE),("Shared",C_SHARED,C_TEAL),("Error",C_ERROR,C_RED)]
         for text,fill,edge in legend:
@@ -3587,9 +4124,9 @@ class NetDashApp:
             legend_x+=118 if text in ("Parallel data","Serial/cohort") else 88 if text!="Program" else 105
         cv.configure(scrollregion=(0,0,diagram_width,max(520,legend_y+55)))
 
-    # ------------------------------------------------------------------
-    # Preview / generate
-    # ------------------------------------------------------------------
+
+
+
     def preview_main(self):
         parsed,issues=self._all_validation(require_files=False);errors=[i for i in issues if i.level=="ERROR"]
         if errors:messagebox.showerror("Cannot preview","Fix validation errors first:\n\n"+"\n".join(str(x) for x in errors[:15]),parent=self.root);self.validate_and_diagram();return
@@ -3737,9 +4274,9 @@ class NetDashApp:
         if errors:messagebox.showerror("Generation blocked","Fix validation errors first:\n\n"+"\n".join(str(x) for x in errors[:18]),parent=self.root);self.validate_and_diagram();return
         try:out=save_project(Path(self.output_dir_var.get()),self.sheet.get_grid(),parsed,self.programs,self.data_defs,self.wasj_configs,self.manifest_rows,self.results_var.get().strip() or "results",self.publish_mode_var.get(),self.convert_var.get(),self.overwrite_var.get(),self.cache_enabled_var.get())
         except Exception as exc:messagebox.showerror("Generation error",str(exc),parent=self.root);return
-        self.status_var.set(f"Generated Nextflow project: {out}");self.refresh_cache_size();messagebox.showinfo("Generated",f"Created:\n{out/'main.nf'}\n{out/'input_manifest.tsv'}\n{out/'NextDash.tabtxt'}\n{out/'DEFINITIONS.txt'}",parent=self.root)
+        self.status_var.set(f"Generated Nextflow project: {out}");self.refresh_cache_size();messagebox.showinfo("Generated",f"Created:\n{out/'main.nf'}\n{out/'input_manifest.tsv'}\n{out/'NextDash.tabtxt'}\n{out/'DEFINITIONS.txt'}\n{out/'ROUTING.tsv'}",parent=self.root)
 
-    # ------------------------------------------------------------------
+
     def _set_text(self,widget,text):
         widget.configure(state="normal");widget.delete("1.0","end");widget.insert("1.0",text);widget.configure(state="disabled")
 

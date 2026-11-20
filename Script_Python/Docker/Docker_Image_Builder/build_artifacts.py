@@ -43,7 +43,7 @@ def fingerprint(component, builder, project_dir=''):
         raise ValueError('Source folder or archive is missing: ' + str(source))
     output_rel = normalized_relative(component.get('output_rel', ''))
     if not output_rel:
-        raise ValueError('Compiled output must be identified in Tab 4.')
+        raise ValueError('Compiled output must be identified in Tab 5.')
     digest = hashlib.sha256()
     settings = {key: component.get(key, '') for key in ('name', 'source', 'build_system', 'build_command', 'build_deps', 'output_rel')}
     settings['builder'] = builder
@@ -86,7 +86,7 @@ def read_record(state, component, validate=True):
     name = str(component.get('name', '') or '')
     record = (state.get('compiled_artifacts', {}) or {}).get(name)
     if not isinstance(record, dict):
-        return None, 'Not compiled yet. Use Tab 4.'
+        return None, 'Not compiled yet. Use Tab 5.'
     path = Path(str(record.get('artifact', '') or ''))
     try:
         resolved = path.resolve()
@@ -94,13 +94,13 @@ def read_record(state, component, validate=True):
         if folder not in resolved.parents:
             return None, 'Recorded artifact is outside the managed compilation folder.'
         if not path.is_file():
-            return None, 'Compiled artifact file is missing. Recompile in Tab 4.'
+            return None, 'Compiled artifact file is missing. Recompile in Tab 5.'
         if validate:
             builder = effective_builder_image(state)
             if record.get('signature') != fingerprint(component, builder, str(state.get('project_dir', '') or '')):
-                return None, 'Source or build settings changed. Recompile in Tab 4.'
+                return None, 'Source or build settings changed. Recompile in Tab 5.'
             if sha256_file(path) != record.get('sha256'):
-                return None, 'Compiled artifact checksum differs. Recompile in Tab 4.'
+                return None, 'Compiled artifact checksum differs. Recompile in Tab 5.'
     except (OSError, ValueError) as exc:
         return None, str(exc)
     return record, 'Ready'
@@ -110,7 +110,7 @@ def prepare_workspace(state, component):
     root = root_path(state)
     source = source_path(component, str(state.get('project_dir', '') or ''))
     if not source or not (source.is_dir() or source.is_file() and is_source_archive(source)):
-        raise ValueError('Source directory or ZIP/TAR archive missing. Configure in Tab 3.')
+        raise ValueError('Source directory or ZIP/TAR archive missing. Configure in Tab 4.')
     destination = artifact_dir(state, component.get('name', ''))
     if destination == source or source in destination.parents or destination in source.parents:
         raise ValueError('Source and compilation staging directories must not contain one another.')

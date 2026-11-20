@@ -20,7 +20,7 @@ class DependencyResolutionDialog(tk.Toplevel):
         self.summary = tk.StringVar()
         tk.Label(self, text='DEPENDENCIES AFTER SCHEDULED REMOVALS', bg='#117864', fg='white',
                  font=('Segoe UI', 14, 'bold'), anchor='w', padx=12, pady=9).pack(fill='x')
-        tk.Label(self, text='An assigned substitute is a USER DECLARATION, not proof of compatibility. Verify the rebuilt image in Tab 5/7.',
+        tk.Label(self, text='An assigned substitute is a USER DECLARATION, not proof of compatibility. Verify the rebuilt image in Tab 6/7.',
                  bg='#FCF3CF', fg='#7D6608', anchor='w', padx=10, pady=8).pack(fill='x', padx=10, pady=(8, 4))
         tk.Label(self, textvariable=self.summary, bg='#D5F5E3', fg='#0E6655', anchor='w', padx=8, pady=7).pack(fill='x', padx=10, pady=4)
         frame = tk.Frame(self)

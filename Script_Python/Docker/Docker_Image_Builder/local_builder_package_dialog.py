@@ -152,7 +152,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
         self.both_checkbox = tk.Checkbutton(option_frame, text='Also use the new image as the ' + alternate,
                                              variable=self.also_other, bg='#E8F8F5', fg='#0E6655',
                                              state='normal' if self.share_option_available else 'disabled')
-        tk.Label(option_frame, text='No intermediate TAR is exported. Runtime packages are applied to the complete final Docker image in Tab 6.',
+        tk.Label(option_frame, text='No intermediate TAR is exported. Runtime packages are applied to the complete final Docker image in Tab 7.',
                  bg='#E8F8F5', fg='#21618C', wraplength=880).pack(anchor='w')
         tk.Label(option_frame, text='Installation is offline. Include any required dependency archives in the selection. '
                  'Click Check dependencies to see what the selected ' + target + ' is missing before installation. '
@@ -290,7 +290,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
                 messagebox.showerror('Final image busy', 'Wait for the current final-image build to finish.', parent=self)
                 return
             if not messagebox.askyesno('Install into COMPLETE Docker image',
-                    'The selected local packages will be included directly in the FULL image built by Tab 6.\n\n' +
+                    'The selected local packages will be included directly in the FULL image built by Tab 7.\n\n' +
                     '\n'.join(Path(file).name for file in self.files) +
                     '\n\nNo intermediate image or TAR will be exported.\n\n' +
                     'Build the complete Docker image now?', parent=self):
@@ -303,7 +303,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
                 messagebox.showerror('Final image update', str(exc), parent=self.app)
             return
         runtime_changes = self.target_role == 'runtime' or self.also_other.get()
-        archive_note = '\n\nNo package-stage TAR is created. Only the complete application image is exported from Tab 6.'
+        archive_note = '\n\nNo package-stage TAR is created. Only the complete application image is exported from Tab 7.'
         shared_note = ('\nThe previous image will stay selected as the builder.'
                        if self.target_role == 'runtime' and not self.also_other.get() and
                        self.builder == self.runtime else '')
@@ -377,7 +377,7 @@ class LocalBuilderPackageDialog(tk.Toplevel):
                                         'New ' + self.target_role + ': ' + result['builder_image'] + '\n\n' +
                                         ('This image is now used for both builder and runtime.' if both else
                                          'The other image selection was preserved.') +
-                                        '\n\nNo intermediate TAR created. Export the complete application image from Tab 6.' +
+                                        '\n\nNo intermediate TAR created. Export the complete application image from Tab 7.' +
                                         '\n\nThe package list is available in Tab 2.', parent=self)
                 except Exception as exc:
                     self._append('DOCKER IMAGE CREATED, BUT PROJECT UPDATE FAILED: ' + str(exc))

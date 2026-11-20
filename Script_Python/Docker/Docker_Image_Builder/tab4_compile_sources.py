@@ -333,7 +333,7 @@ class BuildToolPlanDialog(tk.Toplevel):
             messagebox.showerror('Build command', 'Enter a valid executable name containing letters, digits, underscores, plus signs, dots, or hyphens.', parent=self)
             return
         if name not in recognized_names():
-            messagebox.showinfo('Custom build executable', 'This executable is not yet in the recognition database. It can still be checked as a manual build requirement. Add it in Tab 10 to recognize it automatically in other source projects.', parent=self)
+            messagebox.showinfo('Custom build executable', 'This executable is not yet in the recognition database. It can still be checked as a manual build requirement. Add it in Tab 11 to recognize it automatically in other source projects.', parent=self)
         if name not in {item['command'] for item in self.requirements}:
             self.requirements.append({'command': name, 'evidence': ['Manually required']})
             self.requirements = require_dependencies(self.requirements)
@@ -381,7 +381,7 @@ class SourcesTab(tk.Frame):
         self.document_link_text = tk.StringVar(value='No source documentation selected')
         self.document_paths = {}
         self.status = tk.StringVar(value='NOT COMPILED')
-        tk.Label(self, text='4 — COMPILE SOURCE PROGRAMS', bg='#CA6F1E', fg='white',
+        tk.Label(self, text='5 — COMPILE SOURCE PROGRAMS', bg='#CA6F1E', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
         self.builder = tk.StringVar()
         tk.Label(self, text='Compilation engine: Docker image build + artifact extraction (NO Windows bind mounts)', bg='#FDEBD0', fg='#6E2C00', anchor='w', padx=12).pack(fill='x', padx=12, pady=(4, 0))
@@ -389,7 +389,7 @@ class SourcesTab(tk.Frame):
         form = tk.Frame(self, bg='#FEF5E7')
         form.pack(fill='x', padx=12, pady=8)
         form.columnconfigure(1, weight=1)
-        labels = [('Source component:', self.comp), ('Source folder / archive (Tab 3):', self.source),
+        labels = [('Source component:', self.comp), ('Source folder / archive (Tab 4):', self.source),
                   ('Build system:', self.system), ('Build command:', self.command),
                   ('Compiled output (relative):', self.outputrel), ('Build-only packages (optional):', self.builddeps)]
         for row, (label, variable) in enumerate(labels):
@@ -452,7 +452,7 @@ class SourcesTab(tk.Frame):
         self.requirement_label.bind('<Configure>', lambda _: self._resize_requirement_summary())
         self._render_requirement_summary()
         tk.Label(self, textvariable=self.status, bg='#FEF5E7', fg='#784212', anchor='w', font=('Segoe UI', 10, 'bold')).pack(fill='x', padx=16, pady=4)
-        tk.Label(self, text='Compiles inside the builder selected in Tab 1. Successful executables are saved for runtime library checks in Tab 5 and installation during final image creation in Tab 6. The builder is not included in the final image.',
+        tk.Label(self, text='Compiles inside the builder selected in Tab 1. Successful executables are saved for runtime library checks in Tab 6 and installation during final image creation in Tab 7. The builder is not included in the final image.',
                  bg='#FEF5E7', fg='#784212', anchor='w', justify='left', wraplength=1250).pack(fill='x', padx=15, pady=4)
         self.out = tk.Text(self, font=('Consolas', 9), height=25, wrap='none')
         self.out.tag_configure('installed_status', foreground=INSTALLED_COLOR,
@@ -532,7 +532,7 @@ class SourcesTab(tk.Frame):
             for value in (self.source, self.system, self.command, self.outputrel, self.builddeps):
                 value.set('')
             self._active = ''
-            self.status.set('No enabled Source components in Tab 3')
+            self.status.set('No enabled Source components in Tab 4')
             self._refresh_documentation()
         else:
             if self.comp.get() not in names:
@@ -629,7 +629,7 @@ class SourcesTab(tk.Frame):
     def detect(self):
         source = Path(self.source.get().strip())
         if not (source.is_dir() or (source.is_file() and is_source_archive(source))):
-            messagebox.showerror('Source', 'Select an existing source folder or a ZIP/TAR source archive in Tab 3.', parent=self)
+            messagebox.showerror('Source', 'Select an existing source folder or a ZIP/TAR source archive in Tab 4.', parent=self)
             return
         component = self._selected()
         system, command = detect_build_system(source, component.get('name', '') if component else '')
@@ -756,7 +756,7 @@ class SourcesTab(tk.Frame):
             return
         source = Path(str(component.get('source', '') or '').strip())
         if not (source.is_dir() or (source.is_file() and is_source_archive(source))):
-            messagebox.showerror('Source', 'Select a source folder or a ZIP/TAR archive in Tab 3.', parent=self)
+            messagebox.showerror('Source', 'Select a source folder or a ZIP/TAR archive in Tab 4.', parent=self)
             return
         builder = effective_builder_image(self.app.state)
         if not builder:
@@ -777,7 +777,7 @@ class SourcesTab(tk.Frame):
                 component['build_system'] = system
                 component['build_command'] = command
         if not str(component.get('build_command', '') or '').strip():
-            raise ValueError('Cannot detect a build command. Select this component in Tab 4 and enter the command.')
+            raise ValueError('Cannot detect a build command. Select this component in Tab 5 and enter the command.')
         if not normalized_relative(component.get('output_rel', '')):
             result = detect_compiled_output(str(source), component.get('build_system', ''), component.get('name', ''))
             if not normalized_relative(result.path):
@@ -999,7 +999,7 @@ class SourcesTab(tk.Frame):
         if partial_build:
             component['compile_warning'] = 'Build command returned an error; the requested executable was recovered and its format verified.'
             record['build_warning'] = component['compile_warning']
-            append('WARNING: PARTIAL BUILD. The executable was saved, but the build command did not finish successfully. Review missing optional outputs and run verification in Tab 7.\n')
+            append('WARNING: PARTIAL BUILD. The executable was saved, but the build command did not finish successfully. Review missing optional outputs and run verification in Tab 8.\n')
         else:
             component.pop('compile_warning', None)
             if required_commands:
@@ -1015,7 +1015,7 @@ class SourcesTab(tk.Frame):
                     details['build_status'] = component['builder_tool_status'][tool]
         append('Compiled Linux executable copied and saved successfully.\n')
         append('Saved compiled output: ' + record['artifact'] + '\nSHA-256: ' + record['sha256'] + '\n')
-        append('Build artifact verified. Version checks can run in the completed image (Tab 7).\n')
+        append('Build artifact verified. Version checks can run in the completed image (Tab 8).\n')
         return record
 
     def _finish_compile(self, counts, fatal):
@@ -1224,7 +1224,7 @@ class SourcesTab(tk.Frame):
     def compile_selected(self):
         component = self._selected()
         if component is None:
-            messagebox.showerror('Compile', 'Select an enabled Source component in Tab 4.', parent=self)
+            messagebox.showerror('Compile', 'Select an enabled Source component in Tab 5.', parent=self)
             return
         self._start_compile([component], skip_current=False)
 

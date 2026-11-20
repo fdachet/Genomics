@@ -8,7 +8,7 @@ def _consolidate_online_requests(entries):
     consolidated = []
     for original in entries:
         if not isinstance(original, dict):
-            raise ValueError('A saved online installation request is invalid. Clear the queued online installs in Tab 3.')
+            raise ValueError('A saved online installation request is invalid. Clear the queued online installs in Tab 4.')
         current = dict(original)
         current['packages'] = validate_packages(current.get('packages') or [])
         current['verify_commands'] = sorted(set(current.get('verify_commands') or []))
@@ -22,7 +22,7 @@ def _consolidate_online_requests(entries):
                 current_custom = str(current.get('custom_command') or '').strip()
                 remaining = [name for name in previous['packages'] if name.casefold() not in overlap]
                 if remaining and previous_custom and previous_custom != current_custom:
-                    raise ValueError('Conflicting custom installation commands for ' + ', '.join(sorted(overlap)) + '. Clear queued online installs in Tab 3 and add the intended request once.')
+                    raise ValueError('Conflicting custom installation commands for ' + ', '.join(sorted(overlap)) + '. Clear queued online installs in Tab 4 and add the intended request once.')
                 if remaining:
                     retained.append(dict(previous, packages=remaining))
             elif previous != current:
@@ -38,7 +38,7 @@ def pending_online_requests(state, base=None):
     selected = str(base if base is not None else state.get('base_image') or '').strip()
     for entry in entries:
         if entry.get('base_image') != selected:
-            raise ValueError('The runtime image changed after online packages were selected. Clear the pending final-image package requests in Tab 3 before building against a different runtime.')
+            raise ValueError('The runtime image changed after online packages were selected. Clear the pending final-image package requests in Tab 4 before building against a different runtime.')
     if entries != saved:
         state['final_online_package_requests'] = entries
     return entries

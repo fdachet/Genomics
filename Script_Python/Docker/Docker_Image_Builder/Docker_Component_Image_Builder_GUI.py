@@ -8,6 +8,7 @@ from tab1_project_state import ProjectStateTab
 from tab1_builder_base import BuilderBaseTab
 from tab2_base import BaseTab
 from tab3_components import ComponentsTab
+from tab3_edit_components import EditComponentsTab
 from tab4_compile_sources import SourcesTab
 from tab5_runtime_libraries import RuntimeTab
 from tab6_build_image import BuildTab
@@ -18,7 +19,7 @@ from tab10_recognized_elements import RecognizedElementsTab
 from recognized_elements import select_database
 
 
-APP_VERSION = "V19"
+APP_VERSION = "V25"
 
 
 class DockerImageBuilderApp(tk.Tk):
@@ -63,6 +64,7 @@ class DockerImageBuilderApp(tk.Tk):
         self.builder_tab = BuilderBaseTab(self.notebook, self)
         self.base_tab = BaseTab(self.notebook, self)
         self.components_tab = ComponentsTab(self.notebook, self)
+        self.edit_components_tab = EditComponentsTab(self.notebook, self)
         self.sources_tab = SourcesTab(self.notebook, self)
         self.runtime_tab = RuntimeTab(self.notebook, self)
         self.build_tab = BuildTab(self.notebook, self)
@@ -74,14 +76,15 @@ class DockerImageBuilderApp(tk.Tk):
         self.notebook.add(self.project_tab, text="0. Runtime Base")
         self.notebook.add(self.builder_tab, text="1. Builder Base")
         self.notebook.add(self.base_tab, text="2. Inventory")
-        self.notebook.add(self.components_tab, text="3. Components")
-        self.notebook.add(self.sources_tab, text="4. Compile")
-        self.notebook.add(self.runtime_tab, text="5. Dependencies")
-        self.notebook.add(self.build_tab, text="6. Build Image")
-        self.notebook.add(self.validation_tab, text="7. Verify / Export")
-        self.notebook.add(self.package_finder_tab, text="8. Packages")
-        self.notebook.add(self.container_tab, text="9. Container")
-        self.notebook.add(self.recognized_tab, text="10. Recognized")
+        self.notebook.add(self.edit_components_tab, text="3. Edit Component")
+        self.notebook.add(self.components_tab, text="4. Add Component")
+        self.notebook.add(self.sources_tab, text="5. Compile")
+        self.notebook.add(self.runtime_tab, text="6. Dependencies")
+        self.notebook.add(self.build_tab, text="7. Build Image")
+        self.notebook.add(self.validation_tab, text="8. Verify / Export")
+        self.notebook.add(self.package_finder_tab, text="9. Packages")
+        self.notebook.add(self.container_tab, text="10. Container")
+        self.notebook.add(self.recognized_tab, text="11. Recognized")
 
         self.notebook.bind("<<NotebookTabChanged>>", self._tab_changed)
         self.state.subscribe(self._state_changed)

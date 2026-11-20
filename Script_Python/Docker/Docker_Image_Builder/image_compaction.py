@@ -169,7 +169,7 @@ def show_compaction_dialog(parent, source, callback=None):
                     state['done'] = True
                     if event == 'done':
                         state['result'] = value
-                        output.insert('end', '\nCOMPACTED IMAGE CREATED. Verify applications in Tab 7 before exporting.\n')
+                        output.insert('end', '\nCOMPACTED IMAGE CREATED. Verify applications in Tab 8 before exporting.\n')
                         if callable(callback):
                             callback(value)
                     else:

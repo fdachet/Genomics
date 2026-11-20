@@ -53,7 +53,7 @@ class RuntimeTab(tk.Frame):
         self.packages = tk.StringVar()
         self.selected_path = tk.StringVar()
 
-        tk.Label(self, text='5 — COMPREHENSIVE DEPENDENCY ANALYSIS', bg='#922B21', fg='white',
+        tk.Label(self, text='6 — COMPREHENSIVE DEPENDENCY ANALYSIS', bg='#922B21', fg='white',
                  font=('Segoe UI', 16, 'bold'), anchor='w', padx=14, pady=10).pack(fill='x')
         tk.Label(self, textvariable=self.base_summary, bg='#FADBD8', fg='#78281F',
                  anchor='w', padx=10, pady=7).pack(fill='x', padx=12, pady=(10, 3))
@@ -70,7 +70,7 @@ class RuntimeTab(tk.Frame):
         self.cancel_button = tk.Button(actions, text='Cancel / Reset Scan', bg='#F5B7B1',
                                        command=self.cancel_scan)
         self.cancel_button.pack(side='left', padx=3)
-        tk.Button(actions, text='Add missing to Tab 3', bg='#F7DC6F', command=self.add_missing_component).pack(side='left', padx=3)
+        tk.Button(actions, text='Add missing to Tab 4', bg='#F7DC6F', command=self.add_missing_component).pack(side='left', padx=3)
         tk.Button(actions, text='Explain runtime requirements', bg='#AED6F1',
                   command=self.show_language_requirements).pack(side='left', padx=3)
         tk.Button(actions, text='All dependency types', bg='#A9DFBF', command=self.open_comprehensive_analyzer).pack(side='left', padx=3)
@@ -96,7 +96,7 @@ class RuntimeTab(tk.Frame):
         missing_frame.pack(fill='x', padx=12, pady=(2, 5))
         tk.Label(missing_frame, text='Outstanding requirements in opened runtime image', bg='#FDEDEC',
                  font=('Segoe UI', 10, 'bold')).pack(side='left')
-        tk.Button(missing_frame, text='Add selected requirement to Tab 3', bg='#F7DC6F',
+        tk.Button(missing_frame, text='Add selected requirement to Tab 4', bg='#F7DC6F',
                   command=self.add_selected_requirement).pack(side='left', padx=10)
         outstanding_frame = tk.Frame(self, bg='#FDEDEC')
         outstanding_frame.pack(fill='both', padx=12, pady=(0, 4))
@@ -327,7 +327,7 @@ class RuntimeTab(tk.Frame):
         else:
             path = self._source_path(component.get('source', ''))
             if path is None or not path.is_file():
-                return None, 'No existing executable file selected in Tab 3.'
+                return None, 'No existing executable file selected in Tab 4.'
         if kind == 'jar/application':
             if path.suffix.lower() != '.jar':
                 return None, 'This Java component does not point to a JAR file.'
@@ -406,7 +406,7 @@ class RuntimeTab(tk.Frame):
             self.package_plan_summary.set('USER-SELECTED FINAL-IMAGE OS PACKAGES: ' + package_list +
                 (('  |  Distribution translation: ' + translations) if translations else '') + selection +
                 ('  |  Other user-selected requirements: ' + '; '.join(languages) if languages else '') +
-                ('  |  Installation WILL be attempted during Tab 6.' if plan.get('install_now') else
+                ('  |  Installation WILL be attempted during Tab 7.' if plan.get('install_now') else
                  '  |  Assembly-only: software not installed by this build.'))
         except Exception as exc:
             self.package_plan_summary.set('Dependency planning unavailable: ' + str(exc))
@@ -608,7 +608,7 @@ class RuntimeTab(tk.Frame):
             return
         components = self.app.state.setdefault('components', [])
         if any(str(c.get('name', '')).lower() == package.lower() for c in components if isinstance(c, dict)):
-            messagebox.showinfo('Missing requirement', package + ' is already registered in Tab 3 but is not installed in the opened image.', parent=self)
+            messagebox.showinfo('Missing requirement', package + ' is already registered in Tab 4 but is not installed in the opened image.', parent=self)
             return
         components.append({'name': package, 'kind': 'OS package', 'enabled': True, 'source': '',
                            'destination': '', 'version': '', 'runtime_packages': '',
@@ -762,14 +762,14 @@ class RuntimeTab(tk.Frame):
                                'validation': 'java -version' if 'java' in package.lower() else ''})
             added.append(package)
         if not added:
-            messagebox.showinfo('Missing requirements', 'The package is already listed in Tab 3. It remains missing inside the opened image until you install it in a revision.', parent=self)
+            messagebox.showinfo('Missing requirements', 'The package is already listed in Tab 4. It remains missing inside the opened image until you install it in a revision.', parent=self)
             return
         touch = getattr(self.app.state, 'touch', None)
         if callable(touch):
             touch('components')
         self.app.components_tab.refresh_from_project_state()
         self.app.notebook.select(self.app.components_tab)
-        messagebox.showinfo('Added to Tab 3', 'Registered for a future image revision: ' + ', '.join(added) + '\nNo package was installed or downloaded.', parent=self)
+        messagebox.showinfo('Added to Tab 4', 'Registered for a future image revision: ' + ', '.join(added) + '\nNo package was installed or downloaded.', parent=self)
 
     def _preview(self, name, path, reason):
         if path is None:
